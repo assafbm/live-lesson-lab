@@ -1,0 +1,12 @@
+services:
+  - type: web
+    runtime: node
+    name: live-lesson-lab
+    plan: free
+    region: frankfurt
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start --workspace @live-lesson-lab/signaling
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production

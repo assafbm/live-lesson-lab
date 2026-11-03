@@ -1,0 +1,281 @@
+import { randomUUID } from "node:crypto";
+import { createReadStream, existsSync } from "node:fs";
+import { stat } from "node:fs/promises";
+import { createServer } from "node:http";
+import { extname, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { WebSocket, WebSocketServer } from "ws";
+import { PROTOCOL_VERSION, parseClientMessage } from "@live-lesson-lab/shared";
+import type { ClientMessage, ServerMessage } from "@live-lesson-lab/shared";
+
+type Room = {
+  teacher: WebSocket;
+  // A participant can own a room slot without currently being inside the call.
+  teacherEntered: boolean;
+  student: WebSocket | null;
+  studentEntered: boolean;
+};
+
+type Membership = {
+  roomId: string;
+  role: "teacher" | "student";
+};
+
+// Hosted Node services usually provide PORT; SIGNALING_PORT remains useful locally.
+const port = Number(process.env.PORT ?? process.env.SIGNALING_PORT ?? 3001);
+const rooms = new Map<string, Room>();
+const memberships = new Map<WebSocket, Membership>();
+const serveWebApp = process.env.NODE_ENV === "production";
+// The built web app is a sibling workspace in this monorepo. Resolving from
+// this compiled file keeps the path stable regardless of the process cwd.
+const webRoot = resolve(fileURLToPath(new URL("../../../apps/web/dist/", import.meta.url)));
+const contentTypes: Record<string, string> = {
+  ".css": "text/css; charset=utf-8",
+  ".html": "text/html; charset=utf-8",
+  ".ico": "image/x-icon",
+  ".js": "text/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
+  ".webp": "image/webp"
+};
+
+async function serveBuiltWebApp(pathname: string, response: import("node:http").ServerResponse) {
+  let relativePath: string;
+  try {
+    relativePath = decodeURIComponent(pathname).replace(/^\/+/, "");
+  } catch {
+    response.writeHead(400);
+    response.end("Invalid URL path");
+    return;
+  }
+
+  const requestedPath = resolve(webRoot, relativePath || "index.html");
+  if (requestedPath !== webRoot && !requestedPath.startsWith(`${webRoot}${sep}`)) {
+    response.writeHead(403);
+    response.end("Forbidden");
+    return;
+  }
+
+  // Client-side routes such as ?role=student are served by the same app shell.
+  const filePath = existsSync(requestedPath) ? requestedPath : resolve(webRoot, "index.html");
+  try {
+    const details = await stat(filePath);
+    if (!details.isFile()) throw new Error("Requested path is not a file.");
+    response.writeHead(200, {
+      "content-type": contentTypes[extname(filePath)] ?? "application/octet-stream",
+      "cache-control": filePath.endsWith("index.html") ? "no-cache" : "public, max-age=31536000, immutable"
+    });
+    createReadStream(filePath).pipe(response);
+  } catch {
+    response.writeHead(404);
+    response.end("Web app files are unavailable. Build the web workspace first.");
+  }
+}
+
+// Health checks use ordinary HTTP. WebSocket signaling is handled separately
+// so availability can be checked without creating a lesson connection.
+const server = createServer((request, response) => {
+  const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
+  if (pathname === "/health") {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ status: "ok", service: "signaling" }));
+    return;
+  }
+
+  if (serveWebApp && request.method === "GET" && pathname !== "/signal") {
+    void serveBuiltWebApp(pathname, response);
+    return;
+  }
+
+  response.writeHead(404);
+  response.end("Not found");
+});
+
+const webSocketServer = new WebSocketServer({ server, path: "/signal", maxPayload: 64 * 1024 });
+
+function send(socket: WebSocket, message: ServerMessage) {
+  if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+}
+
+function sendError(socket: WebSocket, message: string) {
+  send(socket, { type: "room-error", message });
+}
+
+function leaveRoom(socket: WebSocket, reason: "left" | "disconnected") {
+  const membership = memberships.get(socket);
+  if (!membership) return;
+
+  memberships.delete(socket);
+  const room = rooms.get(membership.roomId);
+  if (!room) return;
+
+  if (membership.role === "teacher") {
+    rooms.delete(membership.roomId);
+    if (room.student) {
+      memberships.delete(room.student);
+      send(room.student, { type: "peer-left", roomId: membership.roomId });
+    }
+    return;
+  }
+
+  room.student = null;
+  if (room.teacherEntered) send(room.teacher, { type: "peer-left", roomId: membership.roomId });
+}
+
+function exitMeeting(socket: WebSocket, membership: Membership, room: Room) {
+  // Exiting closes only this participant's peer connection. Keep their room
+  // membership so the same user can enter again without creating a new link.
+  if (membership.role === "teacher") {
+    room.teacherEntered = false;
+    if (room.studentEntered && room.student) send(room.student, { type: "peer-left", roomId: membership.roomId });
+  } else {
+    room.studentEntered = false;
+    if (room.teacherEntered) send(room.teacher, { type: "peer-left", roomId: membership.roomId });
+  }
+}
+
+function relay(socket: WebSocket, membership: Membership, room: Room, message: ClientMessage) {
+  const peer = membership.role === "teacher" ? room.student : room.teacher;
+  if (!peer || peer.readyState !== WebSocket.OPEN) {
+    sendError(socket, "The other participant is not connected yet.");
+    return;
+  }
+
+  if (message.type === "audio-state") {
+    send(peer, message);
+    return;
+  }
+
+  if (message.type === "video-role-state") {
+    if (membership.role !== "teacher") {
+      sendError(socket, "Only the teacher can update video role mapping.");
+      return;
+    }
+    send(peer, message);
+    return;
+  }
+
+  if (message.type === "offer" || message.type === "answer" || message.type === "ice-candidate") {
+    if (message.type === "offer" && membership.role !== "teacher") {
+      sendError(socket, "Only the teacher can initiate the WebRTC offer.");
+      return;
+    }
+    if (message.type === "answer" && membership.role !== "student") {
+      sendError(socket, "Only the student can answer the WebRTC offer.");
+      return;
+    }
+    send(peer, message);
+  }
+}
+
+function handleMessage(socket: WebSocket, message: ClientMessage) {
+  // The browser sends an occasional no-op while idle so a free host can tell
+  // that an active lesson's signaling connection is still being used.
+  if (message.type === "heartbeat") return;
+
+  if (message.type === "create-room") {
+    if (memberships.has(socket)) {
+      sendError(socket, "Leave the current room before creating another one.");
+      return;
+    }
+
+    const roomId = randomUUID();
+    rooms.set(roomId, { teacher: socket, teacherEntered: false, student: null, studentEntered: false });
+    memberships.set(socket, { roomId, role: "teacher" });
+    send(socket, { type: "room-created", roomId });
+    return;
+  }
+
+  if (message.type === "join-room") {
+    if (memberships.has(socket)) {
+      sendError(socket, "Leave the current room before joining another one.");
+      return;
+    }
+
+    const room = rooms.get(message.roomId);
+    if (!room) {
+      sendError(socket, "This lesson link is invalid or the room has ended.");
+      return;
+    }
+    if (room.student) {
+      sendError(socket, "This lesson already has a student connected.");
+      return;
+    }
+
+    room.student = socket;
+    room.studentEntered = true;
+    memberships.set(socket, { roomId: message.roomId, role: "student" });
+    send(socket, { type: "room-joined", roomId: message.roomId });
+    if (room.teacherEntered) send(room.teacher, { type: "peer-joined", roomId: message.roomId });
+    return;
+  }
+
+  if (message.type === "enter-room" || message.type === "exit-room") {
+    const membership = memberships.get(socket);
+    if (!membership || membership.roomId !== message.roomId) {
+      sendError(socket, "Join the lesson before entering or leaving its meeting room.");
+      return;
+    }
+    const room = rooms.get(membership.roomId);
+    if (!room) {
+      sendError(socket, "This lesson has ended.");
+      return;
+    }
+    if (message.type === "exit-room") {
+      exitMeeting(socket, membership, room);
+      send(socket, { type: "room-exited", roomId: message.roomId });
+      return;
+    }
+
+    if (membership.role === "teacher") room.teacherEntered = true;
+    else room.studentEntered = true;
+    send(socket, { type: "room-entered", roomId: message.roomId });
+    if (room.teacherEntered && room.studentEntered) send(room.teacher, { type: "peer-joined", roomId: message.roomId });
+    return;
+  }
+
+  if (message.type === "leave-room") {
+    leaveRoom(socket, "left");
+    return;
+  }
+
+  const membership = memberships.get(socket);
+  if (!membership || message.roomId !== membership.roomId) {
+    sendError(socket, "Join a lesson before sending WebRTC messages.");
+    return;
+  }
+
+  const room = rooms.get(membership.roomId);
+  if (!room) {
+    sendError(socket, "This lesson has ended.");
+    return;
+  }
+
+  relay(socket, membership, room, message);
+}
+
+webSocketServer.on("connection", (socket) => {
+  // A small versioned greeting confirms connectivity before room messages begin.
+  send(socket, { type: "server-ready", protocolVersion: PROTOCOL_VERSION });
+
+  socket.on("message", (data, isBinary) => {
+    if (isBinary) {
+      sendError(socket, "Binary messages are not supported by the signaling protocol.");
+      return;
+    }
+
+    const message = parseClientMessage(data.toString());
+    if (!message) {
+      sendError(socket, "The signaling message is invalid or unsupported.");
+      return;
+    }
+    handleMessage(socket, message);
+  });
+
+  socket.on("close", () => leaveRoom(socket, "disconnected"));
+});
+
+server.listen(port, "0.0.0.0", () => {
+  console.log(`Signaling server listening on http://localhost:${port}`);
+});
