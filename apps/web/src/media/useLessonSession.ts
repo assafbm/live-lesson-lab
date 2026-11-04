@@ -628,9 +628,13 @@ export function useLessonSession(
         setSignalingReady(true);
         setStatus("ready");
         setStatusMessage("Connected to the lesson service.");
-        // Render's free service can scale down after inactivity. A small
-        // application message keeps this signaling socket active during a
-        // lesson where media itself flows directly between browsers.
+        // API Gateway completes the WebSocket handshake before the Lambda
+        // integration can send data back. This first heartbeat asks the
+        // serverless adapter for its versioned `server-ready` message. The
+        // local Node server already sends that greeting as soon as it connects.
+        activeSocket.send(JSON.stringify({ type: "heartbeat" } satisfies ClientMessage));
+        // A small keepalive helps intermediaries preserve an otherwise quiet
+        // signaling socket. Lesson media still flows directly between browsers.
         heartbeatTimer = window.setInterval(() => {
           if (activeSocket.readyState === WebSocket.OPEN) {
             activeSocket.send(JSON.stringify({ type: "heartbeat" } satisfies ClientMessage));

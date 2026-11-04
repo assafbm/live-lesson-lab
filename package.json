@@ -12,8 +12,8 @@
     "dev": "concurrently -k -n web,signaling -c blue,green \"npm:dev:web\" \"npm:dev:signaling\"",
     "dev:web": "npm run dev --workspace @live-lesson-lab/web",
     "dev:signaling": "npm run dev --workspace @live-lesson-lab/signaling",
-    "build": "npm run build --workspace @live-lesson-lab/shared && npm run build --workspace @live-lesson-lab/signaling && npm run build --workspace @live-lesson-lab/web",
-    "check": "npm run build --workspace @live-lesson-lab/shared && npm run check --workspace @live-lesson-lab/shared && npm run check --workspace @live-lesson-lab/signaling && npm run check --workspace @live-lesson-lab/web"
+    "build": "npm run build --workspace @live-lesson-lab/shared && npm run build --workspace @live-lesson-lab/signaling && npm run build --workspace @live-lesson-lab/aws-signaling && npm run build --workspace @live-lesson-lab/web",
+    "check": "npm run build --workspace @live-lesson-lab/shared && npm run check --workspace @live-lesson-lab/shared && npm run check --workspace @live-lesson-lab/signaling && npm run check --workspace @live-lesson-lab/aws-signaling && npm run check --workspace @live-lesson-lab/web"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

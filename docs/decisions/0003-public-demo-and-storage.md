@@ -2,7 +2,7 @@
 
 ## Status
 
-Preparing the project for a public learning demo on Render. A hosting account and repository remote have not been connected yet.
+Superseded by [Decision 0004](0004-aws-pilot.md). This decision records the earlier Render demo plan and remains for historical context.
 
 ## Context
 

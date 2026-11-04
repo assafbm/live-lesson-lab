@@ -170,8 +170,8 @@ function relay(socket: WebSocket, membership: Membership, room: Room, message: C
 }
 
 function handleMessage(socket: WebSocket, message: ClientMessage) {
-  // The browser sends an occasional no-op while idle so a free host can tell
-  // that an active lesson's signaling connection is still being used.
+  // A WebSocket keepalive can preserve quiet sessions through intermediaries;
+  // the actual lesson media continues directly between browsers.
   if (message.type === "heartbeat") return;
 
   if (message.type === "create-room") {

@@ -4,12 +4,13 @@
 
 The MVP supports one teacher and one student. The teacher can select a source for each of two video roles: `face` and `document`. The student receives those views and can optionally send one camera view back to the teacher. Both participants can optionally send microphone audio. Each sender can rotate or mirror outgoing video before transmission. The receiver can also rotate, mirror, and zoom its own display independently.
 
-The initial scope excludes a database, an authentication service, an SFU, recording, and AI. Rooms and connections will be managed in memory by the signaling server.
+The local MVP excludes a database, an authentication service, an SFU, recording, and AI. The AWS deployment uses a small DynamoDB table only for temporary connection and room-routing state, with expiry. It does not store lesson media or lesson history.
 
 ## Components
 
 - `apps/web`: React, TypeScript, and Vite user interface. It handles pre-join camera setup, lesson creation/joining, optional two-way microphone audio, the connected meeting room, and WebRTC setup.
-- `services/signaling`: Node.js, TypeScript, and WebSocket. It manages one teacher and one student per in-memory room and relays validated setup messages; it does not process or relay media.
+- `services/signaling`: Node.js, TypeScript, and WebSocket for local development. It manages one teacher and one student per in-memory room and relays validated setup messages; it does not process or relay media.
+- `services/aws-signaling`: AWS Lambda adapter for the same shared protocol. It stores temporary room membership in DynamoDB and uses API Gateway's connection management API to relay messages.
 - `packages/shared`: shared TypeScript contracts for protocol messages and media roles.
 
 ## Planned connection flow
@@ -36,13 +37,13 @@ Each participant adds one `sendrecv` audio transceiver to the peer connection. I
 
 The teacher creates the offer with four media sections in a fixed order: bidirectional audio, teacher face video, teacher document video, and student video. The student does not pre-create transceivers. After applying the teacher's offer, it binds the browser-created transceivers by MID, keeps the two teacher video sections receive-only, sets audio to send-receive, and sets the student video section send-only before creating the answer. This avoids orphan transceivers with no MID and inactive negotiated sections. The student's single camera uses only the final video section; the teacher receives no second student camera track.
 
-The room and signaling state live only in server memory. A server restart ends every room. STUN is configured for direct peer discovery; a TURN server is not configured yet, so some real networks may fail to connect.
+Locally, room and signaling state live only in server memory. A signaling-server restart ends every room. STUN is configured for direct peer discovery; a TURN server is not configured yet, so some real networks may fail to connect.
 
 ## Public demo and data storage
 
-Teacher pages use an explicit `?role=teacher` URL; student invitations use `?role=student&room=...`. The older `?room=...` form remains accepted for compatibility. The Render Blueprint builds the Vite app and Node.js signaling server into one web service: the Node process serves the built static files, `/health`, and the `/signal` WebSocket endpoint on one HTTPS origin. This avoids cross-origin configuration for the first public demo. If the web app and signaling server are split later, `VITE_SIGNALING_URL` supplies the full secure WebSocket endpoint. Hosted signaling listens on the platform-provided `PORT`, with `SIGNALING_PORT` as the local-development fallback.
+Teacher pages use an explicit `?role=teacher` URL; student invitations use `?role=student&room=...`. The older `?room=...` form remains accepted for compatibility. The current AWS direction for `Fresh Deploy` in `eu-north-1` serves the built Vite app from a private S3 bucket through CloudFront's generated HTTPS hostname. API Gateway provides a generated WSS hostname. API Gateway invokes Lambda for each signaling message; DynamoDB stores temporary room membership and connection IDs with TTL so one invocation can find and notify the other browser. WebRTC media remains peer-to-peer. Amazon Kinesis Video Streams is not included because AWS documents it as outside the Free Tier. TURN relay remains an open deployment decision. See [Decision 0005](decisions/0005-domain-free-aws-pilot.md). The earlier Render and EC2 plans remain historical drafts.
 
-The live room is intentionally temporary: the signaling server keeps its participants and session state in memory, WebRTC sends audio/video between browsers, and the database is currently unnecessary. Camera and microphone tracks are never written to a database. A database becomes useful if the product later needs persistent accounts, lesson schedules, saved preferences, or lesson history. It would store those records, not live media. Public deployment still needs a WebSocket host and a TURN plan for networks where direct peer-to-peer media is blocked.
+The live room is intentionally temporary: camera and microphone tracks never enter AWS storage. Locally, signaling keeps its state in memory. In the serverless deployment, DynamoDB holds ephemeral room membership and WebSocket connection IDs and removes them using TTL; this is needed because Lambda invocations do not share process memory. This is not a lesson-history database. Persistent profiles, schedules, preferences, or lesson history remain out of scope. A real-user pilot also needs teacher access control, expiring lesson invitations, rate limits, and a TURN solution before the service is opened broadly.
 
 ## Viewing layout
 
