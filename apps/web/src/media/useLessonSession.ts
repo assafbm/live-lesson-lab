@@ -592,6 +592,55 @@ export function useLessonSession(
     if (audioEnabledRef.current && audioTransceiverRef.current) void applyLocalAudio(true);
   }, [microphoneDeviceId, applyLocalAudio]);
 
+  useEffect(() => {
+    if (status !== "connected") return;
+    const peerConnection = peerConnectionRef.current;
+    if (!peerConnection) return;
+
+    // Receive-side WebRTC stats help separate an audio source problem from
+    // packet loss or jitter. They are local diagnostics and never go to signaling.
+    const previousCounters = new Map<string, { packetsLost: number; concealedSamples: number }>();
+    let sampling = false;
+    const sampleAudioQuality = async () => {
+      if (sampling || peerConnection.connectionState !== "connected") return;
+      sampling = true;
+      try {
+        const report = await peerConnection.getStats();
+        for (const stat of report.values()) {
+          if (stat.type !== "inbound-rtp") continue;
+          const audio = stat as RTCInboundRtpStreamStats & {
+            audioLevel?: number;
+            concealedSamples?: number;
+          };
+          if (audio.kind !== "audio") continue;
+
+          const packetsLost = audio.packetsLost ?? 0;
+          const concealedSamples = audio.concealedSamples ?? 0;
+          const previous = previousCounters.get(audio.id);
+          console.info("[Live Lesson Lab] Audio receive quality", {
+            role,
+            packetsReceived: audio.packetsReceived,
+            packetsLost,
+            packetsLostSinceLastSample: previous ? packetsLost - previous.packetsLost : null,
+            jitterMilliseconds: audio.jitter === undefined ? null : Math.round(audio.jitter * 1000),
+            concealedSamples,
+            concealedSamplesSinceLastSample: previous ? concealedSamples - previous.concealedSamples : null,
+            audioLevel: audio.audioLevel ?? null
+          });
+          previousCounters.set(audio.id, { packetsLost, concealedSamples });
+        }
+      } catch (cause) {
+        console.warn("[Live Lesson Lab] Could not read audio quality stats", cause);
+      } finally {
+        sampling = false;
+      }
+    };
+
+    void sampleAudioQuality();
+    const intervalId = window.setInterval(() => void sampleAudioQuality(), 5000);
+    return () => window.clearInterval(intervalId);
+  }, [role, status]);
+
   const flushPendingCandidates = useCallback(async (peerConnection: RTCPeerConnection) => {
     const queued = pendingCandidatesRef.current;
     pendingCandidatesRef.current = [];
