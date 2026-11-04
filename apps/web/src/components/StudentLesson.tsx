@@ -5,6 +5,7 @@ import { MeetingRoom } from "./MeetingRoom";
 import { useCameraPreviews } from "../media/useCameraPreviews";
 import { useLessonSession } from "../media/useLessonSession";
 import type { OutgoingVideoTransforms } from "../media/useLessonSession";
+import { useAudioInputDevices } from "../media/useAudioInputDevices";
 
 type StudentLessonProps = {
   roomId: string;
@@ -44,7 +45,8 @@ export function StudentLesson({ roomId }: StudentLessonProps) {
 
   // Preview and sender leases point to one manager-owned capture for the selected device.
   const studentPreview = useCameraPreviews({ face: studentCameraId, document: null });
-  const lesson = useLessonSession("student", undefined, studentCameraId, outgoingTransforms);
+  const audioInputs = useAudioInputDevices();
+  const lesson = useLessonSession("student", undefined, studentCameraId, outgoingTransforms, audioInputs.selectedDeviceId);
 
   async function refreshCameraDevices() {
     try {
@@ -122,6 +124,24 @@ export function StudentLesson({ roomId }: StudentLessonProps) {
 
   const viewSettings = (
     <div className="meeting-view-settings">
+      <fieldset>
+        <legend>Microphone</legend>
+        {audioInputs.permissionReady && audioInputs.devices.length > 0 ? (
+          <label>
+            Input device
+            <select aria-label="Microphone to send to the teacher" value={audioInputs.selectedDeviceId} onChange={(event) => audioInputs.setSelectedDeviceId(event.target.value)}>
+              <option value="">System default</option>
+              {audioInputs.devices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label}</option>)}
+            </select>
+          </label>
+        ) : (
+          <button className="meeting-permission-button" type="button" onClick={() => void audioInputs.requestAccess(lesson.audioEnabled)}>
+            Choose microphone
+          </button>
+        )}
+        <p className="settings-help-copy">Microphone changes apply immediately. Browser echo cancellation and noise processing stay enabled at their defaults.</p>
+        {audioInputs.error && <p className="settings-help-copy" role="status">{audioInputs.error}</p>}
+      </fieldset>
       <fieldset>
         <legend>Your camera</legend>
         {cameraPermissionReady && cameraDevices.length > 0 ? (

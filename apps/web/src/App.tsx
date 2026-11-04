@@ -4,6 +4,7 @@ import { StudentLesson } from "./components/StudentLesson";
 import { MeetingRoom } from "./components/MeetingRoom";
 import { useLessonSession } from "./media/useLessonSession";
 import { useCameraPreviews } from "./media/useCameraPreviews";
+import { useAudioInputDevices } from "./media/useAudioInputDevices";
 
 type CameraDevice = {
   deviceId: string;
@@ -82,9 +83,10 @@ function TeacherSetup() {
   const [viewTransforms, setViewTransforms] = useState<Record<VideoRole, ViewTransform>>({ face: defaultTransform, document: defaultTransform });
 
   const previews = useCameraPreviews(selectedDevices);
+  const audioInputs = useAudioInputDevices();
   // The lesson sender leases the same manager-owned streams used by previews.
   // That keeps camera capture single even while local preview and WebRTC both use it.
-  const lesson = useLessonSession("teacher", selectedDevices, null, viewTransforms);
+  const lesson = useLessonSession("teacher", selectedDevices, null, viewTransforms, audioInputs.selectedDeviceId);
   const [copiedLink, setCopiedLink] = useState(false);
   const [inMeeting, setInMeeting] = useState(false);
 
@@ -180,6 +182,24 @@ function TeacherSetup() {
   const rolesShareCamera = Boolean(selectedDevices.face && selectedDevices.face === selectedDevices.document);
   const meetingCameraSettings = (
     <div className="meeting-view-settings">
+      <fieldset>
+        <legend>Microphone</legend>
+        {audioInputs.permissionReady && audioInputs.devices.length > 0 ? (
+          <label>
+            Input device
+            <select aria-label="Microphone to send to the student" value={audioInputs.selectedDeviceId} onChange={(event) => audioInputs.setSelectedDeviceId(event.target.value)}>
+              <option value="">System default</option>
+              {audioInputs.devices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label}</option>)}
+            </select>
+          </label>
+        ) : (
+          <button className="meeting-permission-button" type="button" onClick={() => void audioInputs.requestAccess(lesson.audioEnabled)}>
+            Choose microphone
+          </button>
+        )}
+        <p className="settings-help-copy">Microphone changes apply immediately. Browser echo cancellation and noise processing stay enabled at their defaults.</p>
+        {audioInputs.error && <p className="settings-help-copy" role="status">{audioInputs.error}</p>}
+      </fieldset>
       {(["face", "document"] as const).map((role) => (
         <fieldset key={role}>
           <legend>{roleLabels[role]}</legend>

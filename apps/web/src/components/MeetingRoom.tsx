@@ -125,10 +125,10 @@ export function MeetingRoom({
 
       {/* Role-specific controls are injected here while the room layout stays shared. */}
       {showViewSettings && viewSettings && (
-        <section className="meeting-settings-panel" aria-label="View settings">
+        <section className="meeting-settings-panel" aria-label="Media settings">
           <div className="meeting-settings-heading">
-            <strong>View settings</strong>
-            <button type="button" onClick={() => setShowViewSettings(false)} aria-label="Close view settings">×</button>
+            <strong>Media settings</strong>
+            <button type="button" onClick={() => setShowViewSettings(false)} aria-label="Close media settings">×</button>
           </div>
           {viewSettings}
         </section>
@@ -137,7 +137,7 @@ export function MeetingRoom({
       <footer className="meeting-toolbar">
         <span className="meeting-role-caption">{role === "teacher" ? "Teacher" : "Student"}</span>
         <div className="meeting-actions">
-          {viewSettings && <button className="meeting-action-button" type="button" onClick={() => setShowViewSettings((current) => !current)} aria-pressed={showViewSettings}>View</button>}
+          {viewSettings && <button className="meeting-action-button" type="button" onClick={() => setShowViewSettings((current) => !current)} aria-pressed={showViewSettings}>Settings</button>}
           <button
             className={`meeting-action-button ${microphoneEnabled ? "" : "meeting-action-muted"}`}
             type="button"

@@ -100,7 +100,8 @@ export function useLessonSession(
   outgoingTransforms: OutgoingVideoTransforms = {
     face: { rotation: 0, mirrored: false },
     document: { rotation: 0, mirrored: false }
-  }
+  },
+  microphoneDeviceId = ""
 ) {
   const [signalingReady, setSignalingReady] = useState(false);
   const [status, setStatus] = useState<LessonStatus>("connecting");
@@ -132,13 +133,17 @@ export function useLessonSession(
   const roomIdRef = useRef<string | null>(null);
   const audioEnabledRef = useRef(false);
   const localAudioStreamRef = useRef<MediaStream | null>(null);
-  const audioRequestRef = useRef<Promise<MediaStream> | null>(null);
+  const localAudioDeviceIdRef = useRef("");
+  const audioRequestRef = useRef<{ deviceId: string; promise: Promise<MediaStream> } | null>(null);
+  const microphoneDeviceIdRef = useRef(microphoneDeviceId);
+  const audioApplyQueueRef = useRef<Promise<void>>(Promise.resolve());
   const remoteStreamRef = useRef<MediaStream | null>(null);
   const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
   const activeRef = useRef(true);
   videoSelectionsRef.current = videoSelections;
   studentVideoDeviceIdRef.current = studentVideoDeviceId;
   outgoingTransformsRef.current = outgoingTransforms;
+  microphoneDeviceIdRef.current = microphoneDeviceId;
 
   const getOutgoingTrack = useCallback((deviceId: string, sourceTrack: MediaStreamTrack, transform: VideoTransform) => {
     const current = outgoingProcessorsRef.current.get(deviceId);
@@ -162,6 +167,7 @@ export function useLessonSession(
   const stopLocalAudio = useCallback(() => {
     stopStream(localAudioStreamRef.current);
     localAudioStreamRef.current = null;
+    localAudioDeviceIdRef.current = "";
     audioRequestRef.current = null;
   }, []);
 
@@ -500,17 +506,53 @@ export function useLessonSession(
     if (role === "teacher" && peerConnectionRef.current) void syncTeacherVideoSources();
   }, [role, syncTeacherVideoSources, videoSelections.face, videoSelections.document, outgoingTransforms.face.rotation, outgoingTransforms.face.mirrored, outgoingTransforms.document.rotation, outgoingTransforms.document.mirrored]);
 
-  const getMicrophoneStream = useCallback(async () => {
-    if (localAudioStreamRef.current) return localAudioStreamRef.current;
-    if (!audioRequestRef.current) {
-      audioRequestRef.current = navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  const getMicrophoneStream = useCallback(async (deviceId: string) => {
+    const existingStream = localAudioStreamRef.current;
+    if (existingStream && localAudioDeviceIdRef.current === deviceId) return existingStream;
+
+    // Share an in-flight capture request when the same device is requested twice.
+    // If the user changes selection mid-request, discard that capture and retry
+    // with the newest selection rather than attaching a stale microphone.
+    while (true) {
+      const requestedDeviceId = microphoneDeviceIdRef.current;
+      if (audioRequestRef.current?.deviceId !== requestedDeviceId) {
+        const audio: MediaTrackConstraints | true = requestedDeviceId
+          ? { deviceId: { exact: requestedDeviceId } }
+          : true;
+        audioRequestRef.current = {
+          deviceId: requestedDeviceId,
+          promise: navigator.mediaDevices.getUserMedia({ audio, video: false })
+        };
+      }
+      const request = audioRequestRef.current;
+      if (!request) continue;
+      const stream = await request.promise;
+      if (audioRequestRef.current === request) audioRequestRef.current = null;
+      if (requestedDeviceId !== microphoneDeviceIdRef.current) {
+        stopStream(stream);
+        continue;
+      }
+      localAudioStreamRef.current = stream;
+      localAudioDeviceIdRef.current = requestedDeviceId;
+      const track = stream.getAudioTracks()[0];
+      // These effective browser settings help diagnose poor sound without
+      // logging private device names or IDs. Processing remains browser-default.
+      const settings = track?.getSettings();
+      console.info("[Live Lesson Lab] Microphone captured", {
+        sampleRate: settings?.sampleRate,
+        channelCount: settings?.channelCount,
+        echoCancellation: settings?.echoCancellation,
+        noiseSuppression: settings?.noiseSuppression,
+        autoGainControl: settings?.autoGainControl
+      });
+      return stream;
     }
-    const stream = await audioRequestRef.current;
-    localAudioStreamRef.current = stream;
-    return stream;
   }, []);
 
-  const applyLocalAudio = useCallback(async (enabled: boolean) => {
+  const applyLocalAudio = useCallback((enabled: boolean) => {
+    // Replacements are serialized so rapid device changes cannot let an older
+    // getUserMedia request overwrite the microphone selected most recently.
+    const operation = audioApplyQueueRef.current.then(async () => {
     const transceiver = audioTransceiverRef.current;
     if (!transceiver) return;
 
@@ -523,14 +565,16 @@ export function useLessonSession(
 
     try {
       setAudioError("");
-      const stream = await getMicrophoneStream();
+      const previousStream = localAudioStreamRef.current;
+      const stream = await getMicrophoneStream(microphoneDeviceIdRef.current);
       if (!audioEnabledRef.current) {
-        stopLocalAudio();
+        if (stream !== previousStream) stopStream(stream);
         return;
       }
       const track = stream.getAudioTracks()[0];
       if (!track) throw new Error("No microphone track was returned by the browser.");
       await transceiver.sender.replaceTrack(track);
+      if (previousStream && previousStream !== stream) stopStream(previousStream);
       if (roomIdRef.current) send({ type: "audio-state", roomId: roomIdRef.current, enabled: true });
     } catch {
       audioEnabledRef.current = false;
@@ -539,7 +583,14 @@ export function useLessonSession(
       stopLocalAudio();
       if (roomIdRef.current) send({ type: "audio-state", roomId: roomIdRef.current, enabled: false });
     }
+    });
+    audioApplyQueueRef.current = operation.catch(() => undefined);
+    return operation;
   }, [getMicrophoneStream, send, stopLocalAudio]);
+
+  useEffect(() => {
+    if (audioEnabledRef.current && audioTransceiverRef.current) void applyLocalAudio(true);
+  }, [microphoneDeviceId, applyLocalAudio]);
 
   const flushPendingCandidates = useCallback(async (peerConnection: RTCPeerConnection) => {
     const queued = pendingCandidatesRef.current;
