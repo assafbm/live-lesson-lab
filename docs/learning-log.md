@@ -368,6 +368,14 @@ The offer log exposed eight transceivers on the student: four pre-created transc
 
 The microphone indicator is user-interface state, while the sound is media. A sender can stop sending with `replaceTrack(null)` without every browser updating the remote track's `muted` property the same way. The client therefore sends a tiny `{ type: "audio-state", enabled }` message when the actual sender changes. The signaling server relays this state to the other role; it never receives or forwards audio samples.
 
+### Comparing microphone processing without changing the WebRTC connection
+
+Echo cancellation, noise suppression, and automatic gain control are capture settings, not WebRTC transceiver settings. Changing them requires a new microphone capture, but the new audio track can replace the old sender track with `replaceTrack`; the audio transceiver and offer/answer do not need to be rebuilt. The in-call settings now keep echo cancellation on and let each participant toggle noise suppression and automatic gain control independently. Both begin enabled, matching the previous browser-default behavior. The capture log reports the settings the browser actually applied, which may differ from the requested values.
+
+This creates a controlled listening test for robotic or uneven speech: change one processing setting at a time, wait for the microphone to reconnect, and have the other participant compare. Echo cancellation stays enabled because full-duplex lessons can feed remote speaker audio back into a nearby microphone. Receive statistics add packet-discard and fractional-millisecond jitter values alongside packet loss, audio level, and concealed samples. A stable packet count alone proves that RTP packets arrive; it does not prove that the captured voice sounds natural. Concealed samples are audio the receiver synthesizes to fill gaps before playback, so they help identify interruptions that a packet-loss count alone may not explain.
+
+The current microphone settings are local to each browser and are not signaled to the peer. The capture stream remains local, and only the resulting audio track travels through the peer connection. No audio is recorded or stored.
+
 ### Why exit is different from leave
 
 `exit-room` means “leave the live meeting but keep my room membership.” It lets someone return using the same browser session and preserves the existing student link. `leave-room` means “remove this socket from the room,” which is still used when the page is torn down. Keeping these actions separate makes the in-room disconnect button predictable and avoids treating a temporary step away as ending the lesson.

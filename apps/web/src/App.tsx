@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { CameraPreview } from "./components/CameraPreview";
 import { StudentLesson } from "./components/StudentLesson";
 import { MeetingRoom } from "./components/MeetingRoom";
-import { useLessonSession } from "./media/useLessonSession";
+import { defaultAudioProcessingSettings, useLessonSession, type AudioProcessingSettings } from "./media/useLessonSession";
 import { useCameraPreviews } from "./media/useCameraPreviews";
 import { useAudioInputDevices } from "./media/useAudioInputDevices";
 
@@ -81,12 +81,13 @@ function TeacherSetup() {
     document: null
   });
   const [viewTransforms, setViewTransforms] = useState<Record<VideoRole, ViewTransform>>({ face: defaultTransform, document: defaultTransform });
+  const [audioProcessing, setAudioProcessing] = useState<AudioProcessingSettings>(defaultAudioProcessingSettings);
 
   const previews = useCameraPreviews(selectedDevices);
   const audioInputs = useAudioInputDevices();
   // The lesson sender leases the same manager-owned streams used by previews.
   // That keeps camera capture single even while local preview and WebRTC both use it.
-  const lesson = useLessonSession("teacher", selectedDevices, null, viewTransforms, audioInputs.selectedDeviceId);
+  const lesson = useLessonSession("teacher", selectedDevices, null, viewTransforms, audioInputs.selectedDeviceId, audioProcessing);
   const [copiedLink, setCopiedLink] = useState(false);
   const [inMeeting, setInMeeting] = useState(false);
 
@@ -197,7 +198,16 @@ function TeacherSetup() {
             Choose microphone
           </button>
         )}
-        <p className="settings-help-copy">Microphone changes apply immediately. Browser echo cancellation and noise processing stay enabled at their defaults.</p>
+        <p className="settings-help-copy">Microphone changes apply immediately. Echo cancellation, noise suppression, and automatic gain start enabled.</p>
+        <label className="meeting-settings-check">
+          <input type="checkbox" checked={audioProcessing.noiseSuppression} onChange={(event) => setAudioProcessing((current) => ({ ...current, noiseSuppression: event.target.checked }))} />
+          Noise suppression
+        </label>
+        <label className="meeting-settings-check">
+          <input type="checkbox" checked={audioProcessing.autoGainControl} onChange={(event) => setAudioProcessing((current) => ({ ...current, autoGainControl: event.target.checked }))} />
+          Automatic microphone gain
+        </label>
+        <p className="settings-help-copy">Try turning off one setting at a time if your voice sounds robotic or uneven. Echo cancellation stays on. A change briefly reconnects your microphone.</p>
         {audioInputs.error && <p className="settings-help-copy" role="status">{audioInputs.error}</p>}
       </fieldset>
       {(["face", "document"] as const).map((role) => (

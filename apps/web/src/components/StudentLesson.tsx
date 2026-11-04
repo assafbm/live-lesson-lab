@@ -3,8 +3,7 @@ import type { MediaRole } from "@live-lesson-lab/shared";
 import { CameraPreview } from "./CameraPreview";
 import { MeetingRoom } from "./MeetingRoom";
 import { useCameraPreviews } from "../media/useCameraPreviews";
-import { useLessonSession } from "../media/useLessonSession";
-import type { OutgoingVideoTransforms } from "../media/useLessonSession";
+import { defaultAudioProcessingSettings, useLessonSession, type AudioProcessingSettings, type OutgoingVideoTransforms } from "../media/useLessonSession";
 import { useAudioInputDevices } from "../media/useAudioInputDevices";
 
 type StudentLessonProps = {
@@ -39,6 +38,7 @@ export function StudentLesson({ roomId }: StudentLessonProps) {
   const [cameraMessage, setCameraMessage] = useState("");
   const [viewTransforms, setViewTransforms] = useState<Record<MediaRole, ViewTransform>>({ face: defaultTransform, document: defaultTransform });
   const [outgoingTransforms, setOutgoingTransforms] = useState<OutgoingVideoTransforms>({ face: defaultTransform, document: defaultTransform });
+  const [audioProcessing, setAudioProcessing] = useState<AudioProcessingSettings>(defaultAudioProcessingSettings);
   const [applySharedTransform, setApplySharedTransform] = useState(true);
   const [documentZoom, setDocumentZoom] = useState(1);
   const [inMeeting, setInMeeting] = useState(false);
@@ -46,7 +46,7 @@ export function StudentLesson({ roomId }: StudentLessonProps) {
   // Preview and sender leases point to one manager-owned capture for the selected device.
   const studentPreview = useCameraPreviews({ face: studentCameraId, document: null });
   const audioInputs = useAudioInputDevices();
-  const lesson = useLessonSession("student", undefined, studentCameraId, outgoingTransforms, audioInputs.selectedDeviceId);
+  const lesson = useLessonSession("student", undefined, studentCameraId, outgoingTransforms, audioInputs.selectedDeviceId, audioProcessing);
 
   async function refreshCameraDevices() {
     try {
@@ -139,7 +139,16 @@ export function StudentLesson({ roomId }: StudentLessonProps) {
             Choose microphone
           </button>
         )}
-        <p className="settings-help-copy">Microphone changes apply immediately. Browser echo cancellation and noise processing stay enabled at their defaults.</p>
+        <p className="settings-help-copy">Microphone changes apply immediately. Echo cancellation, noise suppression, and automatic gain start enabled.</p>
+        <label className="meeting-settings-check">
+          <input type="checkbox" checked={audioProcessing.noiseSuppression} onChange={(event) => setAudioProcessing((current) => ({ ...current, noiseSuppression: event.target.checked }))} />
+          Noise suppression
+        </label>
+        <label className="meeting-settings-check">
+          <input type="checkbox" checked={audioProcessing.autoGainControl} onChange={(event) => setAudioProcessing((current) => ({ ...current, autoGainControl: event.target.checked }))} />
+          Automatic microphone gain
+        </label>
+        <p className="settings-help-copy">Try turning off one setting at a time if your voice sounds robotic or uneven. Echo cancellation stays on. A change briefly reconnects your microphone.</p>
         {audioInputs.error && <p className="settings-help-copy" role="status">{audioInputs.error}</p>}
       </fieldset>
       <fieldset>

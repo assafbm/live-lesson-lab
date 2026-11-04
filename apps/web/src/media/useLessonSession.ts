@@ -6,6 +6,15 @@ import { OutgoingVideoTransform, type VideoTransform } from "./OutgoingVideoTran
 
 export type VideoSelections = Record<MediaRole, string | null>;
 export type OutgoingVideoTransforms = Record<MediaRole, VideoTransform>;
+export type AudioProcessingSettings = {
+  noiseSuppression: boolean;
+  autoGainControl: boolean;
+};
+
+export const defaultAudioProcessingSettings: AudioProcessingSettings = {
+  noiseSuppression: true,
+  autoGainControl: true
+};
 
 export type LessonStatus = "connecting" | "ready" | "joining" | "waiting" | "connecting-peer" | "connected" | "disconnected" | "closed" | "failed";
 
@@ -101,7 +110,8 @@ export function useLessonSession(
     face: { rotation: 0, mirrored: false },
     document: { rotation: 0, mirrored: false }
   },
-  microphoneDeviceId = ""
+  microphoneDeviceId = "",
+  audioProcessing = defaultAudioProcessingSettings
 ) {
   const [signalingReady, setSignalingReady] = useState(false);
   const [status, setStatus] = useState<LessonStatus>("connecting");
@@ -133,9 +143,10 @@ export function useLessonSession(
   const roomIdRef = useRef<string | null>(null);
   const audioEnabledRef = useRef(false);
   const localAudioStreamRef = useRef<MediaStream | null>(null);
-  const localAudioDeviceIdRef = useRef("");
-  const audioRequestRef = useRef<{ deviceId: string; promise: Promise<MediaStream> } | null>(null);
+  const localAudioCaptureKeyRef = useRef("");
+  const audioRequestRef = useRef<{ captureKey: string; promise: Promise<MediaStream> } | null>(null);
   const microphoneDeviceIdRef = useRef(microphoneDeviceId);
+  const audioProcessingRef = useRef(audioProcessing);
   const audioApplyQueueRef = useRef<Promise<void>>(Promise.resolve());
   const remoteStreamRef = useRef<MediaStream | null>(null);
   const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
@@ -144,6 +155,7 @@ export function useLessonSession(
   studentVideoDeviceIdRef.current = studentVideoDeviceId;
   outgoingTransformsRef.current = outgoingTransforms;
   microphoneDeviceIdRef.current = microphoneDeviceId;
+  audioProcessingRef.current = audioProcessing;
 
   const getOutgoingTrack = useCallback((deviceId: string, sourceTrack: MediaStreamTrack, transform: VideoTransform) => {
     const current = outgoingProcessorsRef.current.get(deviceId);
@@ -167,7 +179,7 @@ export function useLessonSession(
   const stopLocalAudio = useCallback(() => {
     stopStream(localAudioStreamRef.current);
     localAudioStreamRef.current = null;
-    localAudioDeviceIdRef.current = "";
+    localAudioCaptureKeyRef.current = "";
     audioRequestRef.current = null;
   }, []);
 
@@ -506,21 +518,32 @@ export function useLessonSession(
     if (role === "teacher" && peerConnectionRef.current) void syncTeacherVideoSources();
   }, [role, syncTeacherVideoSources, videoSelections.face, videoSelections.document, outgoingTransforms.face.rotation, outgoingTransforms.face.mirrored, outgoingTransforms.document.rotation, outgoingTransforms.document.mirrored]);
 
-  const getMicrophoneStream = useCallback(async (deviceId: string) => {
-    const existingStream = localAudioStreamRef.current;
-    if (existingStream && localAudioDeviceIdRef.current === deviceId) return existingStream;
+  const getMicrophoneStream = useCallback(async () => {
+    const currentCapture = () => {
+      const settings = audioProcessingRef.current;
+      const deviceId = microphoneDeviceIdRef.current;
+      const captureKey = JSON.stringify([deviceId, settings.noiseSuppression, settings.autoGainControl]);
+      return { captureKey, deviceId, settings };
+    };
 
-    // Share an in-flight capture request when the same device is requested twice.
-    // If the user changes selection mid-request, discard that capture and retry
-    // with the newest selection rather than attaching a stale microphone.
+    const existingStream = localAudioStreamRef.current;
+    if (existingStream && localAudioCaptureKeyRef.current === currentCapture().captureKey) return existingStream;
+
+    // Share an in-flight request for the same device and processing choices.
+    // If either changes mid-request, discard the stale capture and use the latest.
     while (true) {
-      const requestedDeviceId = microphoneDeviceIdRef.current;
-      if (audioRequestRef.current?.deviceId !== requestedDeviceId) {
-        const audio: MediaTrackConstraints | true = requestedDeviceId
-          ? { deviceId: { exact: requestedDeviceId } }
-          : true;
+      const requested = currentCapture();
+      if (audioRequestRef.current?.captureKey !== requested.captureKey) {
+        const audio: MediaTrackConstraints = {
+          ...(requested.deviceId ? { deviceId: { exact: requested.deviceId } } : {}),
+          // Keep echo cancellation on for full-duplex lessons. Noise suppression
+          // and auto gain are independently adjustable for a controlled A/B test.
+          echoCancellation: true,
+          noiseSuppression: requested.settings.noiseSuppression,
+          autoGainControl: requested.settings.autoGainControl
+        };
         audioRequestRef.current = {
-          deviceId: requestedDeviceId,
+          captureKey: requested.captureKey,
           promise: navigator.mediaDevices.getUserMedia({ audio, video: false })
         };
       }
@@ -528,15 +551,16 @@ export function useLessonSession(
       if (!request) continue;
       const stream = await request.promise;
       if (audioRequestRef.current === request) audioRequestRef.current = null;
-      if (requestedDeviceId !== microphoneDeviceIdRef.current) {
+      if (requested.captureKey !== currentCapture().captureKey) {
         stopStream(stream);
         continue;
       }
       localAudioStreamRef.current = stream;
-      localAudioDeviceIdRef.current = requestedDeviceId;
+      localAudioCaptureKeyRef.current = requested.captureKey;
       const track = stream.getAudioTracks()[0];
       // These effective browser settings help diagnose poor sound without
-      // logging private device names or IDs. Processing remains browser-default.
+      // logging private device names or IDs. These values confirm which
+      // processing profile the browser actually accepted.
       const settings = track?.getSettings();
       console.info("[Live Lesson Lab] Microphone captured", {
         sampleRate: settings?.sampleRate,
@@ -566,7 +590,7 @@ export function useLessonSession(
     try {
       setAudioError("");
       const previousStream = localAudioStreamRef.current;
-      const stream = await getMicrophoneStream(microphoneDeviceIdRef.current);
+      const stream = await getMicrophoneStream();
       if (!audioEnabledRef.current) {
         if (stream !== previousStream) stopStream(stream);
         return;
@@ -590,7 +614,7 @@ export function useLessonSession(
 
   useEffect(() => {
     if (audioEnabledRef.current && audioTransceiverRef.current) void applyLocalAudio(true);
-  }, [microphoneDeviceId, applyLocalAudio]);
+  }, [microphoneDeviceId, audioProcessing.noiseSuppression, audioProcessing.autoGainControl, applyLocalAudio]);
 
   useEffect(() => {
     if (status !== "connected") return;
@@ -599,7 +623,11 @@ export function useLessonSession(
 
     // Receive-side WebRTC stats help separate an audio source problem from
     // packet loss or jitter. They are local diagnostics and never go to signaling.
-    const previousCounters = new Map<string, { packetsLost: number; concealedSamples: number }>();
+    const previousCounters = new Map<string, {
+      packetsLost: number;
+      concealedSamples: number;
+      packetsDiscarded: number;
+    }>();
     let sampling = false;
     const sampleAudioQuality = async () => {
       if (sampling || peerConnection.connectionState !== "connected") return;
@@ -611,23 +639,27 @@ export function useLessonSession(
           const audio = stat as RTCInboundRtpStreamStats & {
             audioLevel?: number;
             concealedSamples?: number;
+            packetsDiscarded?: number;
           };
           if (audio.kind !== "audio") continue;
 
           const packetsLost = audio.packetsLost ?? 0;
           const concealedSamples = audio.concealedSamples ?? 0;
+          const packetsDiscarded = audio.packetsDiscarded ?? 0;
           const previous = previousCounters.get(audio.id);
           console.info("[Live Lesson Lab] Audio receive quality", {
             role,
             packetsReceived: audio.packetsReceived,
             packetsLost,
             packetsLostSinceLastSample: previous ? packetsLost - previous.packetsLost : null,
-            jitterMilliseconds: audio.jitter === undefined ? null : Math.round(audio.jitter * 1000),
+            jitterMilliseconds: audio.jitter === undefined ? null : Number((audio.jitter * 1000).toFixed(2)),
+            packetsDiscarded,
+            packetsDiscardedSinceLastSample: previous ? packetsDiscarded - previous.packetsDiscarded : null,
             concealedSamples,
             concealedSamplesSinceLastSample: previous ? concealedSamples - previous.concealedSamples : null,
             audioLevel: audio.audioLevel ?? null
           });
-          previousCounters.set(audio.id, { packetsLost, concealedSamples });
+          previousCounters.set(audio.id, { packetsLost, concealedSamples, packetsDiscarded });
         }
       } catch (cause) {
         console.warn("[Live Lesson Lab] Could not read audio quality stats", cause);
