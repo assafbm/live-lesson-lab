@@ -26,7 +26,9 @@ class CameraSourceManager {
       newEntry.streamPromise = navigator.mediaDevices
         .getUserMedia({
           audio: false,
-          video: { deviceId: { exact: deviceId } }
+          // Ideal constraints permit lower-capability cameras to participate.
+          // The browser still adapts encoded video to CPU and network capacity.
+          video: { deviceId: { exact: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 24, max: 30 } }
         })
         .then((stream) => {
           newEntry.stream = stream;

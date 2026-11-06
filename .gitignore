@@ -6,3 +6,6 @@ infra/aws/cdk.context.json
 .env
 .env.*
 !.env.example
+
+playwright-report/
+test-results/

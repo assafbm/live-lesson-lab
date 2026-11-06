@@ -93,17 +93,71 @@ export class LiveLessonLabServerlessStack extends cdk.Stack {
         origin: origins.S3BucketOrigin.withOriginAccessControl(siteBucket),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
-        cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED
+        cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+        responseHeadersPolicy: new cloudfront.ResponseHeadersPolicy(this, "WebSecurityHeaders", {
+          securityHeadersBehavior: {
+            contentTypeOptions: { override: true },
+            frameOptions: { frameOption: cloudfront.HeadersFrameOption.DENY, override: true },
+            referrerPolicy: { referrerPolicy: cloudfront.HeadersReferrerPolicy.NO_REFERRER, override: true },
+            strictTransportSecurity: { accessControlMaxAge: cdk.Duration.days(365), override: true },
+            contentSecurityPolicy: {
+              contentSecurityPolicy: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self' wss://${socketApi.apiId}.execute-api.${this.region}.${this.urlSuffix}; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'`,
+              override: true
+            }
+          }
+        })
       }
     });
 
-    // The API Gateway policy is restricted to this AWS account and region.
-    // The API ID is generated at deployment, so a wildcard is used only for the
-    // API portion of the management-connection ARN.
+    // OIDC creation is denied by the current AWS Organizations policy. Keep
+    // this optional so unrelated application fixes can still be deployed.
+    // Enable explicitly after the organization administrator resolves the deny.
+    if (this.node.tryGetContext("enableGithubDeploy") === "true") {
+      // GitHub Actions gets short-lived credentials through OIDC instead of a
+      // permanent AWS access key stored in GitHub. The subject condition limits
+      // access to pushes from this repository's main branch only.
+      const githubProvider = new iam.CfnOIDCProvider(this, "GitHubActionsProvider", {
+        url: "https://token.actions.githubusercontent.com",
+        clientIdList: ["sts.amazonaws.com"]
+      });
+      const githubDeployRole = new iam.Role(this, "GitHubActionsDeployRole", {
+        roleName: "LiveLessonLabGitHubDeployRole",
+        assumedBy: new iam.FederatedPrincipal(
+          githubProvider.attrArn,
+          {
+            StringEquals: {
+              "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+              "token.actions.githubusercontent.com:sub": "repo:assafbm/live-lesson-lab:ref:refs/heads/main"
+            }
+          },
+          "sts:AssumeRoleWithWebIdentity"
+        ),
+        description: "Publishes the Live Lesson Lab web build from the main branch"
+      });
+      githubDeployRole.addToPolicy(new iam.PolicyStatement({
+        actions: ["s3:ListBucket"],
+        resources: [siteBucket.bucketArn]
+      }));
+      githubDeployRole.addToPolicy(new iam.PolicyStatement({
+        actions: ["s3:PutObject", "s3:AbortMultipartUpload"],
+        resources: [siteBucket.arnForObjects("*")]
+      }));
+      githubDeployRole.addToPolicy(new iam.PolicyStatement({
+        actions: ["cloudfront:CreateInvalidation"],
+        resources: [distribution.distributionArn]
+      }));
+
+      new cdk.CfnOutput(this, "GitHubActionsDeployRoleArn", {
+        value: githubDeployRole.roleArn,
+        description: "Set this as the AWS_ROLE_ARN repository variable in GitHub"
+      });
+    }
+
+    // Scope connection-management access to this API, stage, account and region.
     signalingHandler.addToRolePolicy(new iam.PolicyStatement({
       actions: ["execute-api:ManageConnections"],
       resources: [
-        `arn:${this.partition}:execute-api:${this.region}:${this.account}:*/${stage.stageName}/POST/@connections/*`
+        `arn:${this.partition}:execute-api:${this.region}:${this.account}:${socketApi.apiId}/${stage.stageName}/POST/@connections/*`
       ]
     }));
 

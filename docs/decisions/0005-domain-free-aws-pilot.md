@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted as the current implementation direction. No AWS resources have been created.
+Implemented and deployed as the AWS pilot on 2026-11-04. Later review changes
+are tracked separately in [the 2026-11-06 review](../review-2026-11-06.md);
+their presence in source does not mean they have been deployed.
 
 ## Context
 

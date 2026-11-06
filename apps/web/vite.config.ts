@@ -10,7 +10,7 @@ export default defineConfig({
       // Keep the browser on one origin while forwarding WebSocket upgrades
       // to the separate signaling process.
       "/signal": {
-        target: "ws://localhost:3001",
+        target: `ws://127.0.0.1:${process.env.SIGNALING_PORT ?? 3001}`,
         ws: true
       }
     }

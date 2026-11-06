@@ -66,7 +66,8 @@ which secure WebSocket endpoint to connect to:
 ```powershell
 $env:VITE_SIGNALING_URL = "<WebSocketUrl stack output>"
 npm run build --workspace @live-lesson-lab/web
-aws s3 sync apps/web/dist "s3://<WebAppBucketName stack output>" --delete
+aws s3 sync apps/web/dist "s3://<WebAppBucketName stack output>" --exclude "index.html" --cache-control "public,max-age=31536000,immutable"
+aws s3 cp apps/web/dist/index.html "s3://<WebAppBucketName stack output>/index.html" --cache-control "no-cache"
 aws cloudfront create-invalidation --distribution-id "<CloudFrontDistributionId stack output>" --paths "/*"
 ```
 
@@ -74,6 +75,45 @@ The placeholders must be replaced with the outputs from the deployed stack.
 Do not commit the generated endpoint into source control; it is environment
 configuration, not a credential. The endpoint is public by design, so the
 server still needs room admission controls before unrelated users are invited.
+
+## Automatic web deployments from GitHub
+
+**Current status:** not activated. AWS Organizations policy denied OIDC provider
+creation; the previous attempt rolled back. Default CDK synthesis/deployment
+excludes federation resources so normal application work is not blocked.
+After the organization policy is resolved, review `npm run diff -- -c
+enableGithubDeploy=true`, then deploy with that same context. Verify the exact
+GitHub OIDC subject matches the role trust policy before enabling the workflow.
+Set `ENABLE_WEB_DEPLOY=true` only after that setup succeeds.
+
+The repository includes `.github/workflows/deploy-web.yml`. After its one-time
+setup, each push to `main` builds the web app, uploads the static files, and
+invalidates CloudFront. A manual run is also available from the GitHub Actions
+tab. The workflow uses GitHub OIDC to request temporary AWS credentials; there
+are no long-lived AWS access keys in GitHub.
+
+With that context enabled, the CDK stack creates a GitHub identity provider and a deploy role restricted
+to `assafbm/live-lesson-lab` on the `main` branch. That role can list and update
+only this website bucket and request cache invalidations only for this site's
+CloudFront distribution. It cannot read the bucket or change the signaling
+API, Lambda, or DynamoDB table.
+
+After deploying the stack once with CDK, open the repository's **Settings →
+Secrets and variables → Actions → Variables** and add these repository
+variables from the CloudFormation outputs:
+
+| Variable | Stack output | Example or meaning |
+| --- | --- | --- |
+| `AWS_ROLE_ARN` | `GitHubActionsDeployRoleArn` | Temporary deployment role to assume |
+| `WEBAPP_BUCKET` | `WebAppBucketName` | Private S3 bucket for the web build |
+| `CLOUDFRONT_DISTRIBUTION_ID` | `CloudFrontDistributionId` | Distribution to invalidate after upload |
+| `VITE_SIGNALING_URL` | `WebSocketUrl` | The deployed secure WebSocket URL |
+
+These values identify public infrastructure and are not credentials, so they
+belong in repository variables rather than GitHub secrets. Do not add an AWS
+access key or secret key to the repository. The initial CDK deployment is still
+a manual, reviewed step; after that, a successful push to `main` publishes the
+new web version automatically.
 
 ## Cost and access boundaries
 

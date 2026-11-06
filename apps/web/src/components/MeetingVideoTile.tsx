@@ -1,9 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type MeetingVideoTileProps = {
   label: string;
   stream: MediaStream | null;
-  local?: boolean;
   main?: boolean;
   placeholder: string;
   detail?: string;
@@ -16,7 +15,6 @@ type MeetingVideoTileProps = {
 export function MeetingVideoTile({
   label,
   stream,
-  local = false,
   main = false,
   placeholder,
   detail,
@@ -25,7 +23,27 @@ export function MeetingVideoTile({
   zoom = 1
 }: MeetingVideoTileProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const quarterTurn = rotation === 90 || rotation === 270;
+  const tileRef = useRef<HTMLElement>(null);
+  const [frameSize, setFrameSize] = useState<{ width: number; height: number } | null>(null);
+  useEffect(() => {
+    const tile = tileRef.current;
+    const video = videoRef.current;
+    if (!tile || !video) return;
+    const fit = () => {
+      const width = video.videoWidth;
+      const height = video.videoHeight;
+      if (!width || !height) return;
+      const quarterTurn = rotation === 90 || rotation === 270;
+      const scale = Math.min(tile.clientWidth / (quarterTurn ? height : width), tile.clientHeight / (quarterTurn ? width : height));
+      setFrameSize({ width: width * scale, height: height * scale });
+    };
+    const observer = new ResizeObserver(fit);
+    observer.observe(tile);
+    video.addEventListener("resize", fit);
+    video.addEventListener("loadedmetadata", fit);
+    fit();
+    return () => { observer.disconnect(); video.removeEventListener("resize", fit); video.removeEventListener("loadedmetadata", fit); };
+  }, [stream, rotation]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -37,17 +55,17 @@ export function MeetingVideoTile({
     };
   }, [stream]);
 
-  // A quarter turn swaps the frame's visual width and height. Scaling those
-  // turns down keeps the complete image inside its tile instead of cropping it.
+  // Fit the actual rotated dimensions. A fixed scale clips portrait documents
+  // on short screens and wastes space on wide screens.
   return (
-    <section className={`meeting-video-tile ${main ? "meeting-main-tile" : ""}`} aria-label={label}>
+    <section ref={tileRef} className={`meeting-video-tile ${main ? "meeting-main-tile" : ""}`} aria-label={label}>
       {stream ? (
         <video
           ref={videoRef}
           autoPlay
           playsInline
-          muted={local}
-          style={{ transform: `rotate(${rotation}deg) scale(${(quarterTurn ? 0.62 : 1) * zoom}) scaleX(${mirrored ? -1 : 1})` }}
+          muted
+          style={{ ...frameSize, transform: `rotate(${rotation}deg) scale(${zoom}) scaleX(${mirrored ? -1 : 1})` }}
         />
       ) : (
         <div className="meeting-video-placeholder">{placeholder}</div>

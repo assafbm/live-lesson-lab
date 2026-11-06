@@ -393,3 +393,31 @@ The current microphone settings are local to each browser and are not signaled t
 - Disconnect the teacher while the student stays in the meeting, then have the teacher log in again. Observe the fresh offer/answer exchange.
 - Repeat with the student disconnecting and re-entering. Observe that the teacher remains on the meeting screen.
 - Toggle the teacher microphone and watch the student badge update even if no remote audio packets arrive while muted.
+
+## 2026-11-06 — Review: measure effective behavior, not just requested behavior
+
+The review found a useful distinction: asking a browser to change microphone
+processing and receiving a resolved promise did not necessarily change its
+effective settings. Read `getSettings()` after the change. In Chrome tests, a
+second capture sharing the same input could preserve the earlier processing.
+The fallback now releases the old capture before reopening it and reports a
+mismatch if another tab still prevents the requested settings from taking effect.
+
+Capture requests also have lifetimes. A permission prompt may finish after the
+user disconnects. A generation counter identifies obsolete work, and any late
+stream is stopped before it can be attached. Serialized sender updates avoid
+an older asynchronous request overwriting a newer choice.
+
+Video follows a similar principle: no pixel transform means no canvas is needed.
+For rotation/mirroring, one shared camera still has one transformed output and
+one sender. Drawing on each new camera frame avoids redundant display-rate work.
+
+Security checks belong at the server boundary. Shared TypeScript types help
+developers, but runtime validation, room ownership checks, expiry conditions and
+bounded messages protect the service from unexpected clients. DynamoDB TTL is
+cleanup, not an authorization check.
+
+Read [the consolidated decisions](development-decisions.md) for alternatives
+and [the review report](review-2026-11-06.md) for evidence and unresolved limits.
+The browser suite proves synthetic media flow and lifecycle behavior; a real
+two-device listening test is still needed to establish natural voice quality.

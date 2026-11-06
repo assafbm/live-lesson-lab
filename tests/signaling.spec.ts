@@ -1,0 +1,50 @@
+import { test, expect } from "@playwright/test";
+import WebSocket from "ws";
+
+async function client() {
+  const socket = new WebSocket("ws://127.0.0.1:4301/signal");
+  const messages: any[] = [];
+  socket.on("message", (data) => messages.push(JSON.parse(data.toString())));
+  await new Promise<void>((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject); });
+  return {
+    socket, messages,
+    send: (message: object) => socket.send(JSON.stringify(message)),
+    async receive(type: string) {
+      await expect.poll(() => messages.findIndex((message) => message.type === type)).toBeGreaterThanOrEqual(0);
+      return messages.splice(messages.findIndex((message) => message.type === type), 1)[0];
+    }
+  };
+}
+
+test("signaling enforces room isolation, two participants and role permissions", async () => {
+  const teacher = await client();
+  const student = await client();
+  const stranger = await client();
+  try {
+    teacher.send({ type: "create-room" });
+    const { roomId } = await teacher.receive("room-created");
+    teacher.send({ type: "enter-room", roomId });
+    await teacher.receive("room-entered");
+    student.send({ type: "join-room", roomId });
+    await student.receive("room-joined");
+    await teacher.receive("peer-joined");
+    stranger.send({ type: "join-room", roomId });
+    expect((await stranger.receive("room-error")).message).toContain("already has a student");
+    stranger.send({ type: "offer", roomId, sdp: "untrusted" });
+    expect((await stranger.receive("room-error")).message).toContain("Join a lesson");
+    student.send({ type: "offer", roomId, sdp: "untrusted" });
+    expect((await student.receive("room-error")).message).toContain("Only the teacher");
+    student.send({ type: "audio-state", roomId: "different-room", enabled: true });
+    expect((await student.receive("room-error")).message).toContain("Join a lesson");
+    student.send({ type: "audio-state", roomId, enabled: true });
+    expect((await teacher.receive("audio-state")).enabled).toBe(true);
+    student.send({ type: "exit-room", roomId });
+    await student.receive("room-exited");
+    await teacher.receive("peer-left");
+    student.send({ type: "enter-room", roomId });
+    await student.receive("room-entered");
+    await teacher.receive("peer-joined");
+    teacher.socket.close();
+    expect((await student.receive("room-closed")).roomId).toBe(roomId);
+  } finally { teacher.socket.close(); student.socket.close(); stranger.socket.close(); }
+});

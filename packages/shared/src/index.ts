@@ -54,15 +54,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isIceCandidate(value: unknown): value is IceCandidatePayload {
   if (!isRecord(value)) return false;
-  return typeof value.candidate === "string"
-    && (typeof value.sdpMid === "string" || value.sdpMid === null)
-    && (typeof value.sdpMLineIndex === "number" || value.sdpMLineIndex === null)
-    && (value.usernameFragment === undefined || typeof value.usernameFragment === "string" || value.usernameFragment === null);
+  return typeof value.candidate === "string" && value.candidate.length <= 4096
+    && (isMid(value.sdpMid) || value.sdpMid === null)
+    && (value.sdpMLineIndex === null || (typeof value.sdpMLineIndex === "number" && Number.isInteger(value.sdpMLineIndex) && value.sdpMLineIndex >= 0 && value.sdpMLineIndex < 32))
+    && (value.usernameFragment === undefined || value.usernameFragment === null || (typeof value.usernameFragment === "string" && value.usernameFragment.length <= 256));
 }
+
+function isMid(value: unknown): value is string {
+  return typeof value === "string" && /^[a-zA-Z0-9_-]{1,32}$/.test(value);
+}
+
+function isRoomId(value: unknown): value is string {
+  return typeof value === "string" && /^[a-zA-Z0-9_-]{1,80}$/.test(value);
+}
+
+// API Gateway has a 32 KiB frame limit. Bound the encoded envelope before
+// JSON parsing and use the same limit in both signaling implementations.
+export const MAX_SIGNALING_BYTES = 32 * 1024;
 
 // TypeScript types disappear at runtime, so every WebSocket payload must be
 // parsed and checked before the server treats it as a protocol message.
 export function parseClientMessage(payload: string): ClientMessage | null {
+  if (payload.length > MAX_SIGNALING_BYTES || new TextEncoder().encode(payload).byteLength > MAX_SIGNALING_BYTES) return null;
   let value: unknown;
   try {
     value = JSON.parse(payload);
@@ -80,26 +93,31 @@ export function parseClientMessage(payload: string): ClientMessage | null {
     case "enter-room":
     case "exit-room":
     case "join-room":
-      return typeof value.roomId === "string" && value.roomId.length <= 80
+      return isRoomId(value.roomId)
         ? { type: value.type, roomId: value.roomId }
         : null;
     case "offer":
     case "answer":
-      return typeof value.roomId === "string" && typeof value.sdp === "string" && value.sdp.length <= 60_000
+      return isRoomId(value.roomId) && typeof value.sdp === "string" && value.sdp.length > 0
         ? { type: value.type, roomId: value.roomId, sdp: value.sdp }
         : null;
     case "ice-candidate":
-      return typeof value.roomId === "string" && isIceCandidate(value.candidate)
-        ? { type: value.type, roomId: value.roomId, candidate: value.candidate }
+      return isRoomId(value.roomId) && isIceCandidate(value.candidate)
+        ? { type: value.type, roomId: value.roomId, candidate: {
+          candidate: value.candidate.candidate,
+          sdpMid: value.candidate.sdpMid,
+          sdpMLineIndex: value.candidate.sdpMLineIndex,
+          ...(value.candidate.usernameFragment !== undefined ? { usernameFragment: value.candidate.usernameFragment } : {})
+        } }
         : null;
     case "audio-state":
-      return typeof value.roomId === "string" && typeof value.enabled === "boolean"
+      return isRoomId(value.roomId) && typeof value.enabled === "boolean"
         ? { type: value.type, roomId: value.roomId, enabled: value.enabled }
         : null;
     case "video-role-state": {
-      if (typeof value.roomId !== "string" || !isRecord(value.roles)) return null;
+      if (!isRoomId(value.roomId) || !isRecord(value.roles)) return null;
       const { face, document } = value.roles;
-      if ((typeof face !== "string" && face !== null) || (typeof document !== "string" && document !== null)) return null;
+      if ((!isMid(face) && face !== null) || (!isMid(document) && document !== null)) return null;
       return { type: value.type, roomId: value.roomId, roles: { face, document } };
     }
     default:

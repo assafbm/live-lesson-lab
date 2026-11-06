@@ -1,0 +1,81 @@
+name: Deploy web app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-web-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # Explicit activation prevents failing deployments while AWS OIDC is blocked.
+    if: vars.ENABLE_WEB_DEPLOY == 'true'
+    name: Build and publish the web app
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: eu-north-1
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      WEBAPP_BUCKET: ${{ vars.WEBAPP_BUCKET }}
+      CLOUDFRONT_DISTRIBUTION_ID: ${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}
+      VITE_SIGNALING_URL: ${{ vars.VITE_SIGNALING_URL }}
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Check and test before publishing
+        run: |
+          npm run check
+          npx playwright install --with-deps chromium
+          npm test
+
+      - name: Verify deployment configuration
+        run: |
+          test -n "$WEBAPP_BUCKET" || (echo "Missing repository variable: WEBAPP_BUCKET" && exit 1)
+          test -n "$CLOUDFRONT_DISTRIBUTION_ID" || (echo "Missing repository variable: CLOUDFRONT_DISTRIBUTION_ID" && exit 1)
+          test -n "$VITE_SIGNALING_URL" || (echo "Missing repository variable: VITE_SIGNALING_URL" && exit 1)
+          test -n "$AWS_ROLE_ARN" || (echo "Missing repository variable: AWS_ROLE_ARN" && exit 1)
+
+      - name: Build shared protocol package
+        run: npm run build --workspace @live-lesson-lab/shared
+
+      - name: Build the web app
+        run: npm run build --workspace @live-lesson-lab/web
+
+      - name: Configure short-lived AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Keep previous hashed assets so existing lesson tabs can finish using
+      # their current release. Publish the entry point last with revalidation.
+      - name: Publish versioned assets
+        run: aws s3 sync apps/web/dist "s3://${WEBAPP_BUCKET}" --exclude "index.html" --cache-control "public,max-age=31536000,immutable"
+
+      - name: Publish the entry point
+        run: aws s3 cp apps/web/dist/index.html "s3://${WEBAPP_BUCKET}/index.html" --cache-control "no-cache"
+
+      - name: Refresh CloudFront cache
+        run: aws cloudfront create-invalidation --distribution-id "${CLOUDFRONT_DISTRIBUTION_ID}" --paths "/*"

@@ -16,6 +16,7 @@ export class OutgoingVideoTransform {
   private readonly canvas = document.createElement("canvas");
   private readonly context: CanvasRenderingContext2D;
   private frameRequest = 0;
+  private videoFrameRequest = 0;
   private transform: VideoTransform;
   private stopped = false;
 
@@ -29,6 +30,10 @@ export class OutgoingVideoTransform {
     this.video.muted = true;
     this.video.playsInline = true;
     this.video.srcObject = new MediaStream([sourceTrack]);
+    const settings = sourceTrack.getSettings();
+    const quarterTurn = transform.rotation === 90 || transform.rotation === 270;
+    this.canvas.width = (quarterTurn ? settings.height : settings.width) ?? 1280;
+    this.canvas.height = (quarterTurn ? settings.width : settings.height) ?? 720;
     this.stream = this.canvas.captureStream(30);
     const outputTrack = this.stream.getVideoTracks()[0];
     if (!outputTrack) throw new Error("The transformed camera did not create a video track.");
@@ -44,6 +49,7 @@ export class OutgoingVideoTransform {
   stop() {
     this.stopped = true;
     cancelAnimationFrame(this.frameRequest);
+    if (this.videoFrameRequest) this.video.cancelVideoFrameCallback(this.videoFrameRequest);
     this.video.pause();
     this.video.srcObject = null;
     this.stream.getTracks().forEach((track) => track.stop());
@@ -70,6 +76,12 @@ export class OutgoingVideoTransform {
       context.scale(this.transform.mirrored ? -1 : 1, 1);
       context.drawImage(this.video, -width / 2, -height / 2, width, height);
     }
-    this.frameRequest = requestAnimationFrame(this.drawFrame);
+    // Work once per new camera frame instead of copying the same frame on
+    // every display refresh. The fallback supports older browser engines.
+    if (typeof this.video.requestVideoFrameCallback === "function") {
+      this.videoFrameRequest = this.video.requestVideoFrameCallback(this.drawFrame);
+    } else {
+      this.frameRequest = requestAnimationFrame(this.drawFrame);
+    }
   };
 }

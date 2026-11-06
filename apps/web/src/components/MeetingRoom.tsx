@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { ParticipantRole } from "@live-lesson-lab/shared";
 import { MeetingVideoTile } from "./MeetingVideoTile";
+import { MediaDiagnostics } from "./MediaDiagnostics";
+import type { MediaQualitySample } from "../media/MediaQuality";
 
 type MeetingRoomProps = {
   role: ParticipantRole;
@@ -15,6 +17,7 @@ type MeetingRoomProps = {
   microphoneEnabled: boolean;
   remoteMicrophoneEnabled: boolean;
   audioError: string;
+  qualitySamples: MediaQualitySample[];
   videoError?: string;
   mainRotation?: 0 | 90 | 180 | 270;
   mainMirrored?: boolean;
@@ -41,6 +44,7 @@ export function MeetingRoom({
   microphoneEnabled,
   remoteMicrophoneEnabled,
   audioError,
+  qualitySamples,
   videoError = "",
   mainRotation = 0,
   mainMirrored = false,
@@ -56,6 +60,8 @@ export function MeetingRoom({
   const audioRef = useRef<HTMLAudioElement>(null);
   const [audioPlaybackBlocked, setAudioPlaybackBlocked] = useState(false);
   const [showViewSettings, setShowViewSettings] = useState(false);
+  const settingsButton = useRef<HTMLButtonElement>(null);
+  const closeSettingsButton = useRef<HTMLButtonElement>(null);
   const peerName = role === "teacher" ? "Student" : "Teacher";
 
   useEffect(() => {
@@ -65,11 +71,21 @@ export function MeetingRoom({
     if (remoteAudio) {
       // Browsers may block sound until a user gesture; keep a visible recovery action.
       void audio.play().then(() => setAudioPlaybackBlocked(false)).catch(() => setAudioPlaybackBlocked(true));
-    }
+    } else setAudioPlaybackBlocked(false);
     return () => {
       audio.srcObject = null;
     };
   }, [remoteAudio]);
+
+  useEffect(() => {
+    if (!showViewSettings) return;
+    closeSettingsButton.current?.focus();
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { setShowViewSettings(false); settingsButton.current?.focus(); }
+    };
+    window.addEventListener("keydown", escape);
+    return () => window.removeEventListener("keydown", escape);
+  }, [showViewSettings]);
 
   return (
     <main className="meeting-screen">
@@ -93,13 +109,12 @@ export function MeetingRoom({
           rotation={mainRotation}
           mirrored={mainMirrored}
           zoom={mainZoom}
-          placeholder={role === "teacher" ? "Choose a document camera before the lesson to share your desk here." : "Waiting for the teacher to share the document camera."}
+          placeholder={role === "teacher" ? "Choose a document camera in Settings to share your desk." : "Waiting for the teacher to share the document camera."}
         />
         <aside className="meeting-side-rail" aria-label="Participant cameras">
           <MeetingVideoTile
             label="You · Face"
             stream={localFaceVideo}
-            local
             rotation={localFaceRotation}
             mirrored={localFaceMirrored}
             placeholder="Your face camera is off."
@@ -118,26 +133,29 @@ export function MeetingRoom({
       {(audioError || videoError || audioPlaybackBlocked) && (
         <div className="meeting-notice" role="status">
           {audioError || videoError || "Your browser blocked audio playback."}
-          {audioPlaybackBlocked && <button type="button" onClick={() => void audioRef.current?.play()}>Play audio</button>}
+          {audioPlaybackBlocked && <button type="button" onClick={() => {
+            void audioRef.current?.play().then(() => setAudioPlaybackBlocked(false)).catch(() => setAudioPlaybackBlocked(true));
+          }}>Play audio</button>}
         </div>
       )}
       <audio ref={audioRef} autoPlay playsInline />
 
       {/* Role-specific controls are injected here while the room layout stays shared. */}
       {showViewSettings && viewSettings && (
-        <section className="meeting-settings-panel" aria-label="Media settings">
+        <section id="media-settings" className="meeting-settings-panel" aria-label="Media settings">
           <div className="meeting-settings-heading">
             <strong>Media settings</strong>
-            <button type="button" onClick={() => setShowViewSettings(false)} aria-label="Close media settings">×</button>
+            <button ref={closeSettingsButton} type="button" onClick={() => { setShowViewSettings(false); settingsButton.current?.focus(); }} aria-label="Close media settings">×</button>
           </div>
           {viewSettings}
+          <MediaDiagnostics samples={qualitySamples} />
         </section>
       )}
 
       <footer className="meeting-toolbar">
         <span className="meeting-role-caption">{role === "teacher" ? "Teacher" : "Student"}</span>
         <div className="meeting-actions">
-          {viewSettings && <button className="meeting-action-button" type="button" onClick={() => setShowViewSettings((current) => !current)} aria-pressed={showViewSettings}>Settings</button>}
+          {viewSettings && <button ref={settingsButton} className="meeting-action-button" type="button" onClick={() => setShowViewSettings((current) => !current)} aria-expanded={showViewSettings} aria-controls="media-settings">Settings</button>}
           <button
             className={`meeting-action-button ${microphoneEnabled ? "" : "meeting-action-muted"}`}
             type="button"

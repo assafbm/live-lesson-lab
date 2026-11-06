@@ -1,5 +1,60 @@
 # Testing strategy
 
+## Automated regression suite (2026-11-06)
+
+Run `npm ci`, `npm run check`, `npm run build`, and `npm test` from the repository
+root. Local browser tests use installed Google Chrome with fake camera/microphone
+devices; they never request your physical devices. Ports 4173 and 4301 must be
+available. CI uses Playwright's pinned Chromium instead. The suite starts and
+stops its own web/signaling processes. Reports are written to `playwright-report`
+and screenshots/traces to `test-results`; these generated directories are ignored.
+
+The suite covers protocol validation, local room isolation and role permissions,
+AWS handler expiry/ownership checks with mocked SDK calls, two-way media,
+single-capture/single-sender shared cameras, outgoing rotation, microphone retry
+and effective processing changes, late camera activation, autoplay recovery,
+disconnect cleanup, delayed permission results, and responsive viewports.
+
+AWS mocks do not exercise DynamoDB's service-side condition evaluation or a live
+API Gateway deployment. Fake audio does not establish natural voice quality.
+Screenshots do not replace accessibility or usability testing with real users.
+
+## Required real-device audio and video acceptance
+
+1. Use separate devices and headphones, and choose each intended microphone.
+2. Speak continuously for at least 30 seconds in each direction, then together.
+   Check clipping, low volume, metallic sound, echo and gaps. Record which listener
+   hears which defect; do not record personal conversation without consent.
+3. Open Settings → Connection diagnostics in both browsers and download summaries
+   from the same interval. They exclude raw SDP, ICE addresses and device labels.
+4. Compare incoming packet rate, concealment percentage, jitter-buffer delay and
+   outgoing level. Missing statistics display as unavailable, never as a healthy zero.
+5. With headphones, compare one processing option at a time. If the browser reports
+   a mismatch, close other captures of that microphone before retrying. Keep echo
+   cancellation on when using speakers.
+6. Read real handwriting at normal document size; try 0/90/180/270 degrees and
+   mirroring, both shared and distinct cameras, receiver rotation, and camera-off.
+7. Repeat with Chrome/Edge on separate devices, separate networks, Wi-Fi and a
+   backgrounded tab. Measure before choosing codec/bitrate or adding a processing
+   pipeline. TURN/reconnection remain release requirements.
+
+Earlier milestone checklists follow for historical and manual coverage.
+
+## Manual check of the deployed pilot
+
+After publishing the matching AWS and web changes, run:
+
+```powershell
+$env:LESSON_TEST_URL = "https://d14zq4wr2313jx.cloudfront.net"
+node scripts/check-deployed-lesson.mjs
+```
+
+This explicitly creates a temporary room through the real AWS endpoint and opens
+two script-owned Chrome contexts with synthetic devices. It checks security
+headers, bidirectional media, diagnostics and student re-entry. Closing those
+contexts ends that test room. It does not close your existing browser windows,
+use physical capture devices, or replace the separate-device acceptance checklist.
+
 ## Milestone 0
 
 - `npm run check` type-checks all workspaces.

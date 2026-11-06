@@ -1,17 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PROTOCOL_VERSION } from "@live-lesson-lab/shared";
 import type { ClientMessage, IceCandidatePayload, MediaRole, ParticipantRole, ServerMessage, VideoRoleState } from "@live-lesson-lab/shared";
+import { summarizeMediaQuality, type MediaQualitySample, type PreviousMediaStats } from "./MediaQuality";
 import { cameraSourceManager } from "./CameraSourceManager";
 import { OutgoingVideoTransform, type VideoTransform } from "./OutgoingVideoTransform";
 
 export type VideoSelections = Record<MediaRole, string | null>;
 export type OutgoingVideoTransforms = Record<MediaRole, VideoTransform>;
 export type AudioProcessingSettings = {
+  echoCancellation: boolean;
   noiseSuppression: boolean;
   autoGainControl: boolean;
 };
 
 export const defaultAudioProcessingSettings: AudioProcessingSettings = {
+  echoCancellation: true,
   noiseSuppression: true,
   autoGainControl: true
 };
@@ -113,6 +116,7 @@ export function useLessonSession(
   microphoneDeviceId = "",
   audioProcessing = defaultAudioProcessingSettings
 ) {
+  const [qualitySamples, setQualitySamples] = useState<MediaQualitySample[]>([]);
   const [signalingReady, setSignalingReady] = useState(false);
   const [status, setStatus] = useState<LessonStatus>("connecting");
   const [statusMessage, setStatusMessage] = useState("Connecting to the lesson service…");
@@ -144,13 +148,15 @@ export function useLessonSession(
   const audioEnabledRef = useRef(false);
   const localAudioStreamRef = useRef<MediaStream | null>(null);
   const localAudioCaptureKeyRef = useRef("");
-  const audioRequestRef = useRef<{ captureKey: string; promise: Promise<MediaStream> } | null>(null);
+  const localAudioDeviceIdRef = useRef("");
+  const audioGenerationRef = useRef(0);
   const microphoneDeviceIdRef = useRef(microphoneDeviceId);
   const audioProcessingRef = useRef(audioProcessing);
   const audioApplyQueueRef = useRef<Promise<void>>(Promise.resolve());
   const remoteStreamRef = useRef<MediaStream | null>(null);
   const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
   const activeRef = useRef(true);
+  const teacherOfferInFlightRef = useRef(false);
   videoSelectionsRef.current = videoSelections;
   studentVideoDeviceIdRef.current = studentVideoDeviceId;
   outgoingTransformsRef.current = outgoingTransforms;
@@ -159,6 +165,14 @@ export function useLessonSession(
 
   const getOutgoingTrack = useCallback((deviceId: string, sourceTrack: MediaStreamTrack, transform: VideoTransform) => {
     const current = outgoingProcessorsRef.current.get(deviceId);
+    // A neutral camera goes directly to WebRTC. Canvas is only needed when
+    // changing pixels; bypassing it preserves detail and reduces CPU contention.
+    if (transform.rotation === 0 && !transform.mirrored) {
+      current?.processor.stop();
+      outgoingProcessorsRef.current.delete(deviceId);
+      setOutgoingVideoStreams((streams) => ({ ...streams, [deviceId]: new MediaStream([sourceTrack]) }));
+      return sourceTrack;
+    }
     if (current && current.sourceTrack === sourceTrack && current.sourceTrack.readyState === "live") {
       current.processor.update(transform);
       return current.processor.track;
@@ -180,7 +194,7 @@ export function useLessonSession(
     stopStream(localAudioStreamRef.current);
     localAudioStreamRef.current = null;
     localAudioCaptureKeyRef.current = "";
-    audioRequestRef.current = null;
+    audioGenerationRef.current += 1;
   }, []);
 
   const closePeerConnection = useCallback(() => {
@@ -207,6 +221,7 @@ export function useLessonSession(
     pendingCandidatesRef.current = [];
     remoteStreamRef.current = null;
     setRemoteStream(null);
+    setQualitySamples([]);
     setRemoteAudioEnabled(false);
     setRemoteVideoStreams({});
     setVideoRoleState({ face: null, document: null });
@@ -264,12 +279,19 @@ export function useLessonSession(
           muted: event.track.muted
         });
         if (isStudentVideo) {
-          const showStudentVideo = () => setRemoteStudentVideoStream(stream);
-          // Keep the track attached while muted. WebRTC often marks a remote
-          // track muted briefly before its first RTP frame; detaching it then
-          // can make the tile flicker or miss the first render.
+          const showStudentVideo = () => {
+            if (peerConnectionRef.current === peerConnection) setRemoteStudentVideoStream(stream);
+          };
+          const hideStudentVideo = () => {
+            if (peerConnectionRef.current === peerConnection) setRemoteStudentVideoStream(null);
+          };
+          // A negotiated receiver exists even when the student has no camera.
+          // Show it only after media starts, and restore the placeholder when
+          // the receiver reports a pause instead of claiming a blank tile is live.
           event.track.addEventListener("unmute", showStudentVideo);
-          showStudentVideo();
+          event.track.addEventListener("mute", hideStudentVideo);
+          event.track.addEventListener("ended", hideStudentVideo);
+          if (!event.track.muted) showStudentVideo();
           return;
         }
         if (mid) {
@@ -373,20 +395,26 @@ export function useLessonSession(
         }
       }
 
+      let captureFailed = false;
       const tracks = new Map<string, MediaStreamTrack>();
       for (const deviceId of uniqueIds) {
         const lease = videoLeasesRef.current.get(deviceId);
         if (!lease) continue;
         try {
           const stream = await lease.stream;
+          if (peerConnectionRef.current !== peerConnection) return;
           const track = stream.getVideoTracks()[0];
           if (!track) throw new Error("The selected camera returned no video track.");
           // One camera source produces one processed track. If both teacher
           // roles share the device, the role controls are linked and share it.
           const transformRole = deviceId === selections.face ? "face" : "document";
           const transform = outgoingTransformsRef.current[transformRole];
-          tracks.set(deviceId, getOutgoingTrack(deviceId, track, transform));
+          const outgoingTrack = getOutgoingTrack(deviceId, track, transform);
+          // Shared face/document sources prioritize readable handwriting.
+          outgoingTrack.contentHint = deviceId === selections.document ? "detail" : "motion";
+          tracks.set(deviceId, outgoingTrack);
         } catch {
+          captureFailed = true;
           lease.release();
           videoLeasesRef.current.delete(deviceId);
           setVideoError("A selected camera could not be shared. Choose another camera or turn this view off.");
@@ -405,7 +433,7 @@ export function useLessonSession(
         return;
       }
 
-      setVideoError("");
+      if (!captureFailed) setVideoError("");
       // The new track is attached before old camera leases are released, so
       // changing devices never creates a gap where the old source is stopped too early.
       for (const [deviceId, lease] of videoLeasesRef.current) {
@@ -458,9 +486,14 @@ export function useLessonSession(
       if (requestedDeviceId && nextLease) {
         try {
           const stream = await nextLease.lease.stream;
+          if (peerConnectionRef.current !== peerConnection) {
+            nextLease.lease.release();
+            return;
+          }
           const sourceTrack = stream.getVideoTracks()[0] ?? null;
           if (!sourceTrack) throw new Error("The selected camera returned no video track.");
-          nextTrack = getOutgoingTrack(requestedDeviceId!, sourceTrack, outgoingTransformsRef.current.face);
+          nextTrack = getOutgoingTrack(requestedDeviceId, sourceTrack, outgoingTransformsRef.current.face);
+          nextTrack.contentHint = "motion";
         } catch {
           if (nextLease !== studentVideoLeaseRef.current) nextLease.lease.release();
           setVideoError("Your selected camera could not be shared. Choose another camera or turn your video off.");
@@ -519,94 +552,107 @@ export function useLessonSession(
   }, [role, syncTeacherVideoSources, videoSelections.face, videoSelections.document, outgoingTransforms.face.rotation, outgoingTransforms.face.mirrored, outgoingTransforms.document.rotation, outgoingTransforms.document.mirrored]);
 
   const getMicrophoneStream = useCallback(async () => {
-    const currentCapture = () => {
-      const settings = audioProcessingRef.current;
+    const generation = audioGenerationRef.current;
+    while (activeRef.current && audioEnabledRef.current && generation === audioGenerationRef.current) {
       const deviceId = microphoneDeviceIdRef.current;
-      const captureKey = JSON.stringify([deviceId, settings.noiseSuppression, settings.autoGainControl]);
-      return { captureKey, deviceId, settings };
-    };
-
-    const existingStream = localAudioStreamRef.current;
-    if (existingStream && localAudioCaptureKeyRef.current === currentCapture().captureKey) return existingStream;
-
-    // Share an in-flight request for the same device and processing choices.
-    // If either changes mid-request, discard the stale capture and use the latest.
-    while (true) {
-      const requested = currentCapture();
-      if (audioRequestRef.current?.captureKey !== requested.captureKey) {
-        const audio: MediaTrackConstraints = {
-          ...(requested.deviceId ? { deviceId: { exact: requested.deviceId } } : {}),
-          // Keep echo cancellation on for full-duplex lessons. Noise suppression
-          // and auto gain are independently adjustable for a controlled A/B test.
-          echoCancellation: true,
-          noiseSuppression: requested.settings.noiseSuppression,
-          autoGainControl: requested.settings.autoGainControl
-        };
-        audioRequestRef.current = {
-          captureKey: requested.captureKey,
-          promise: navigator.mediaDevices.getUserMedia({ audio, video: false })
-        };
+      const processing = { ...audioProcessingRef.current };
+      const captureKey = JSON.stringify([deviceId, processing]);
+      const previous = localAudioStreamRef.current;
+      const previousTrack = previous?.getAudioTracks()[0];
+      const constraints: MediaTrackConstraints = {
+        ...processing,
+        channelCount: { ideal: 1 },
+        sampleRate: { ideal: 48000 }
+      };
+      // Processing changes on the same live microphone do not need a second
+      // capture. Keep the sender attached while the browser applies constraints.
+      const sameDevice = previousTrack?.readyState === "live"
+        && localAudioDeviceIdRef.current === deviceId;
+      let stream: MediaStream;
+      if (sameDevice && previous) {
+        if (localAudioCaptureKeyRef.current !== captureKey) await previousTrack.applyConstraints(constraints);
+        stream = previous;
+        // Some browsers resolve applyConstraints without changing processing.
+        // Inspect reported settings and reopen only when a requested value was
+        // ignored. Chromium can reuse processing from a still-live capture of
+        // the same device, so release that capture before reopening it. This
+        // intentionally creates a short audio gap only when changing settings.
+        const effective = previousTrack.getSettings();
+        if ((Object.keys(processing) as (keyof AudioProcessingSettings)[])
+          .some((key) => typeof effective[key] === "boolean" && effective[key] !== processing[key])) {
+          stopStream(previous);
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: { ...constraints, ...(deviceId ? { deviceId: { exact: deviceId } } : {}) }, video: false
+          });
+        }
+      } else {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: { ...constraints, ...(deviceId ? { deviceId: { exact: deviceId } } : {}) }, video: false
+        });
       }
-      const request = audioRequestRef.current;
-      if (!request) continue;
-      const stream = await request.promise;
-      if (audioRequestRef.current === request) audioRequestRef.current = null;
-      if (requested.captureKey !== currentCapture().captureKey) {
+      // Permission dialogs cannot be cancelled. Stop a late result when the
+      // user has muted, left, or moved to a new peer connection in the meantime.
+      if (!activeRef.current || !audioEnabledRef.current || generation !== audioGenerationRef.current) {
         stopStream(stream);
+        throw new DOMException("Microphone request is no longer current.", "AbortError");
+      }
+      if (deviceId !== microphoneDeviceIdRef.current || captureKey !== JSON.stringify([deviceId, audioProcessingRef.current])) {
+        if (stream !== previous) stopStream(stream);
         continue;
       }
       localAudioStreamRef.current = stream;
-      localAudioCaptureKeyRef.current = requested.captureKey;
+      localAudioCaptureKeyRef.current = captureKey;
+      localAudioDeviceIdRef.current = deviceId;
       const track = stream.getAudioTracks()[0];
-      // These effective browser settings help diagnose poor sound without
-      // logging private device names or IDs. These values confirm which
-      // processing profile the browser actually accepted.
-      const settings = track?.getSettings();
-      console.info("[Live Lesson Lab] Microphone captured", {
-        sampleRate: settings?.sampleRate,
-        channelCount: settings?.channelCount,
-        echoCancellation: settings?.echoCancellation,
-        noiseSuppression: settings?.noiseSuppression,
-        autoGainControl: settings?.autoGainControl
-      });
+      if (track) track.contentHint = "speech";
       return stream;
     }
+    throw new DOMException("Microphone request was cancelled.", "AbortError");
   }, []);
 
   const applyLocalAudio = useCallback((enabled: boolean) => {
     // Replacements are serialized so rapid device changes cannot let an older
     // getUserMedia request overwrite the microphone selected most recently.
     const operation = audioApplyQueueRef.current.then(async () => {
-    const transceiver = audioTransceiverRef.current;
-    if (!transceiver) return;
+      const transceiver = audioTransceiverRef.current;
+      const peer = peerConnectionRef.current;
+      if (!transceiver || !peer) return;
 
-    if (!enabled) {
-      await transceiver.sender.replaceTrack(null);
-      stopLocalAudio();
-      if (roomIdRef.current) send({ type: "audio-state", roomId: roomIdRef.current, enabled: false });
-      return;
-    }
-
-    try {
-      setAudioError("");
-      const previousStream = localAudioStreamRef.current;
-      const stream = await getMicrophoneStream();
-      if (!audioEnabledRef.current) {
-        if (stream !== previousStream) stopStream(stream);
+      if (!enabled) {
+        await transceiver.sender.replaceTrack(null);
+        stopLocalAudio();
+        if (roomIdRef.current) send({ type: "audio-state", roomId: roomIdRef.current, enabled: false });
         return;
       }
-      const track = stream.getAudioTracks()[0];
-      if (!track) throw new Error("No microphone track was returned by the browser.");
-      await transceiver.sender.replaceTrack(track);
-      if (previousStream && previousStream !== stream) stopStream(previousStream);
-      if (roomIdRef.current) send({ type: "audio-state", roomId: roomIdRef.current, enabled: true });
-    } catch {
-      audioEnabledRef.current = false;
-      setAudioEnabledState(false);
-      setAudioError("Microphone access failed. Check browser permissions, then try again.");
-      stopLocalAudio();
-      if (roomIdRef.current) send({ type: "audio-state", roomId: roomIdRef.current, enabled: false });
-    }
+
+      if (!audioEnabledRef.current) return;
+      try {
+        setAudioError("");
+        const previousStream = localAudioStreamRef.current;
+        const stream = await getMicrophoneStream();
+        if (!audioEnabledRef.current || peerConnectionRef.current !== peer) {
+          if (stream !== previousStream) stopStream(stream);
+          return;
+        }
+        const track = stream.getAudioTracks()[0];
+        if (!track) throw new Error("No microphone track was returned by the browser.");
+        await transceiver.sender.replaceTrack(track);
+        if (previousStream && previousStream !== stream) stopStream(previousStream);
+        const effective = track.getSettings();
+        const requested = audioProcessingRef.current;
+        if ((Object.keys(requested) as (keyof AudioProcessingSettings)[])
+          .some((key) => typeof effective[key] === "boolean" && effective[key] !== requested[key])) {
+          setAudioError("The browser kept different microphone processing settings. Another tab may be sharing this microphone. Turn its microphone off, then retry your settings.");
+        }
+        if (roomIdRef.current) send({ type: "audio-state", roomId: roomIdRef.current, enabled: true });
+      } catch (error) {
+        if (peerConnectionRef.current !== peer || (error instanceof DOMException && error.name === "AbortError")) return;
+        audioEnabledRef.current = false;
+        setAudioEnabledState(false);
+        setAudioError("Microphone access failed. Check browser permissions, then try again.");
+        stopLocalAudio();
+        if (roomIdRef.current) send({ type: "audio-state", roomId: roomIdRef.current, enabled: false });
+      }
     });
     audioApplyQueueRef.current = operation.catch(() => undefined);
     return operation;
@@ -614,64 +660,34 @@ export function useLessonSession(
 
   useEffect(() => {
     if (audioEnabledRef.current && audioTransceiverRef.current) void applyLocalAudio(true);
-  }, [microphoneDeviceId, audioProcessing.noiseSuppression, audioProcessing.autoGainControl, applyLocalAudio]);
+  }, [microphoneDeviceId, audioProcessing.echoCancellation, audioProcessing.noiseSuppression, audioProcessing.autoGainControl, applyLocalAudio]);
 
   useEffect(() => {
     if (status !== "connected") return;
     const peerConnection = peerConnectionRef.current;
     if (!peerConnection) return;
 
-    // Receive-side WebRTC stats help separate an audio source problem from
-    // packet loss or jitter. They are local diagnostics and never go to signaling.
-    const previousCounters = new Map<string, {
-      packetsLost: number;
-      concealedSamples: number;
-      packetsDiscarded: number;
-    }>();
+    const previous: PreviousMediaStats = new Map();
     let sampling = false;
-    const sampleAudioQuality = async () => {
-      if (sampling || peerConnection.connectionState !== "connected") return;
+    let disposed = false;
+    const sample = async () => {
+      if (sampling) return;
       sampling = true;
       try {
         const report = await peerConnection.getStats();
-        for (const stat of report.values()) {
-          if (stat.type !== "inbound-rtp") continue;
-          const audio = stat as RTCInboundRtpStreamStats & {
-            audioLevel?: number;
-            concealedSamples?: number;
-            packetsDiscarded?: number;
-          };
-          if (audio.kind !== "audio") continue;
-
-          const packetsLost = audio.packetsLost ?? 0;
-          const concealedSamples = audio.concealedSamples ?? 0;
-          const packetsDiscarded = audio.packetsDiscarded ?? 0;
-          const previous = previousCounters.get(audio.id);
-          console.info("[Live Lesson Lab] Audio receive quality", {
-            role,
-            packetsReceived: audio.packetsReceived,
-            packetsLost,
-            packetsLostSinceLastSample: previous ? packetsLost - previous.packetsLost : null,
-            jitterMilliseconds: audio.jitter === undefined ? null : Number((audio.jitter * 1000).toFixed(2)),
-            packetsDiscarded,
-            packetsDiscardedSinceLastSample: previous ? packetsDiscarded - previous.packetsDiscarded : null,
-            concealedSamples,
-            concealedSamplesSinceLastSample: previous ? concealedSamples - previous.concealedSamples : null,
-            audioLevel: audio.audioLevel ?? null
-          });
-          previousCounters.set(audio.id, { packetsLost, concealedSamples, packetsDiscarded });
-        }
-      } catch (cause) {
-        console.warn("[Live Lesson Lab] Could not read audio quality stats", cause);
+        if (disposed || peerConnectionRef.current !== peerConnection) return;
+        const quality = summarizeMediaQuality(report, previous);
+        setQualitySamples((samples) => [...samples.slice(-11), quality]);
+      } catch {
+        // Closing a peer while getStats is pending is a normal lifecycle event.
       } finally {
         sampling = false;
       }
     };
-
-    void sampleAudioQuality();
-    const intervalId = window.setInterval(() => void sampleAudioQuality(), 5000);
-    return () => window.clearInterval(intervalId);
-  }, [role, status]);
+    void sample();
+    const timer = window.setInterval(() => void sample(), 5000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [status]);
 
   const flushPendingCandidates = useCallback(async (peerConnection: RTCPeerConnection) => {
     const queued = pendingCandidatesRef.current;
@@ -681,20 +697,22 @@ export function useLessonSession(
 
   const startTeacherOffer = useCallback(async () => {
     const room = roomIdRef.current;
-    if (!room) return;
+    if (!room || teacherOfferInFlightRef.current) return;
+    teacherOfferInFlightRef.current = true;
+    try {
+      const peerConnection = createPeerConnection();
+      setStatus("connecting-peer");
+      setStatusMessage("The student joined. Setting up the connection…");
+      if (audioEnabledRef.current) await applyLocalAudio(true);
+      await syncTeacherVideoSources();
 
-    const peerConnection = createPeerConnection();
-    setStatus("connecting-peer");
-    setStatusMessage("The student joined. Setting up the connection…");
-    if (audioEnabledRef.current) await applyLocalAudio(true);
-    await syncTeacherVideoSources();
-
-    const offer = await peerConnection.createOffer();
-    await peerConnection.setLocalDescription(offer);
-    console.info("[Live Lesson Lab] Teacher created the offer", describeTransceivers(peerConnection));
-    // MID values become available after local description is set.
-    await syncTeacherVideoSources();
-    send({ type: "offer", roomId: room, sdp: offer.sdp ?? "" });
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+      console.info("[Live Lesson Lab] Teacher created the offer", describeTransceivers(peerConnection));
+      // MID values become available after local description is set.
+      await syncTeacherVideoSources();
+      send({ type: "offer", roomId: room, sdp: offer.sdp ?? "" });
+    } finally { teacherOfferInFlightRef.current = false; }
   }, [applyLocalAudio, createPeerConnection, send, syncTeacherVideoSources]);
 
   const handleOffer = useCallback(async (message: Extract<ServerMessage, { type: "offer" }>) => {
@@ -811,7 +829,7 @@ export function useLessonSession(
       }
       if (message.type === "room-exited") return;
       if (message.type === "peer-joined") {
-        if (role === "teacher") void startTeacherOffer().catch(() => {
+        if (role === "teacher" && (!peerConnectionRef.current || peerConnectionRef.current.signalingState === "stable")) void startTeacherOffer().catch(() => {
           setStatus("failed");
           setStatusMessage("Could not start the WebRTC connection. Try leaving and creating the room again.");
         });
@@ -828,6 +846,8 @@ export function useLessonSession(
       }
       if (message.type === "room-closed") {
         closePeerConnection();
+        roomIdRef.current = null;
+        setRoomId(null);
         setStatus("closed");
         setStatusMessage(message.reason);
         return;
@@ -838,7 +858,7 @@ export function useLessonSession(
         return;
       }
       if (message.type === "audio-state") {
-        setRemoteAudioEnabled(message.enabled);
+        if (message.roomId === roomIdRef.current) setRemoteAudioEnabled(message.enabled);
         return;
       }
 
@@ -908,8 +928,8 @@ export function useLessonSession(
     setRoomId(activeRoomId);
     setStatus("waiting");
     setStatusMessage(role === "teacher" ? "Entering the room. Waiting for your student…" : "Entering the room. Waiting for your teacher…");
-    // The student prepares its fixed transceivers while waiting; the teacher
-    // creates the offer only after signaling confirms the student is present.
+    // The student prepares an empty peer; the remote offer creates its media
+    // sections. The teacher offers after signaling confirms both are present.
     if (role === "student") createPeerConnection();
     send({ type: "enter-room", roomId: activeRoomId });
   }, [createPeerConnection, role, send]);
@@ -955,6 +975,7 @@ export function useLessonSession(
   }, [closePeerConnection, send]);
 
   return {
+    qualitySamples,
     signalingReady,
     status,
     statusMessage,

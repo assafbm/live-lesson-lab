@@ -13,9 +13,11 @@
     "dev:web": "npm run dev --workspace @live-lesson-lab/web",
     "dev:signaling": "npm run dev --workspace @live-lesson-lab/signaling",
     "build": "npm run build --workspace @live-lesson-lab/shared && npm run build --workspace @live-lesson-lab/signaling && npm run build --workspace @live-lesson-lab/aws-signaling && npm run build --workspace @live-lesson-lab/web",
-    "check": "npm run build --workspace @live-lesson-lab/shared && npm run check --workspace @live-lesson-lab/shared && npm run check --workspace @live-lesson-lab/signaling && npm run check --workspace @live-lesson-lab/aws-signaling && npm run check --workspace @live-lesson-lab/web"
+    "check": "npm run build --workspace @live-lesson-lab/shared && npm run check --workspace @live-lesson-lab/shared && npm run check --workspace @live-lesson-lab/signaling && npm run check --workspace @live-lesson-lab/aws-signaling && npm run check --workspace @live-lesson-lab/web",
+    "test": "npm run build --workspace @live-lesson-lab/shared && npm run build --workspace @live-lesson-lab/signaling && playwright test"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.0",
     "concurrently": "^9.1.2",
     "typescript": "^5.7.3"
   }

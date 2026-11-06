@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
-import { PROTOCOL_VERSION, parseClientMessage } from "@live-lesson-lab/shared";
+import { MAX_SIGNALING_BYTES, PROTOCOL_VERSION, parseClientMessage } from "@live-lesson-lab/shared";
 import type { ClientMessage, ServerMessage } from "@live-lesson-lab/shared";
 
 type Room = {
@@ -92,7 +92,7 @@ const server = createServer((request, response) => {
   response.end("Not found");
 });
 
-const webSocketServer = new WebSocketServer({ server, path: "/signal", maxPayload: 64 * 1024 });
+const webSocketServer = new WebSocketServer({ server, path: "/signal", maxPayload: MAX_SIGNALING_BYTES });
 
 function send(socket: WebSocket, message: ServerMessage) {
   if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
@@ -102,7 +102,7 @@ function sendError(socket: WebSocket, message: string) {
   send(socket, { type: "room-error", message });
 }
 
-function leaveRoom(socket: WebSocket, reason: "left" | "disconnected") {
+function leaveRoom(socket: WebSocket) {
   const membership = memberships.get(socket);
   if (!membership) return;
 
@@ -114,12 +114,13 @@ function leaveRoom(socket: WebSocket, reason: "left" | "disconnected") {
     rooms.delete(membership.roomId);
     if (room.student) {
       memberships.delete(room.student);
-      send(room.student, { type: "peer-left", roomId: membership.roomId });
+      send(room.student, { type: "room-closed", roomId: membership.roomId, reason: "The teacher connection closed. Ask for a new lesson link." });
     }
     return;
   }
 
   room.student = null;
+  room.studentEntered = false;
   if (room.teacherEntered) send(room.teacher, { type: "peer-left", roomId: membership.roomId });
 }
 
@@ -136,6 +137,7 @@ function exitMeeting(socket: WebSocket, membership: Membership, room: Room) {
 }
 
 function relay(socket: WebSocket, membership: Membership, room: Room, message: ClientMessage) {
+  if (!room.teacherEntered || !room.studentEntered) return;
   const peer = membership.role === "teacher" ? room.student : room.teacher;
   if (!peer || peer.readyState !== WebSocket.OPEN) {
     sendError(socket, "The other participant is not connected yet.");
@@ -236,7 +238,7 @@ function handleMessage(socket: WebSocket, message: ClientMessage) {
   }
 
   if (message.type === "leave-room") {
-    leaveRoom(socket, "left");
+    leaveRoom(socket);
     return;
   }
 
@@ -259,7 +261,16 @@ webSocketServer.on("connection", (socket) => {
   // A small versioned greeting confirms connectivity before room messages begin.
   send(socket, { type: "server-ready", protocolVersion: PROTOCOL_VERSION });
 
+  // A per-socket token bucket permits ICE bursts but bounds sustained abuse.
+  let tokens = 80;
+  let lastRefill = Date.now();
+  socket.on("error", () => leaveRoom(socket));
   socket.on("message", (data, isBinary) => {
+    const now = Date.now();
+    tokens = Math.min(80, tokens + (now - lastRefill) / 1000 * 20);
+    lastRefill = now;
+    if (tokens < 1) { socket.close(1008, "Signaling rate limit exceeded"); return; }
+    tokens -= 1;
     if (isBinary) {
       sendError(socket, "Binary messages are not supported by the signaling protocol.");
       return;
@@ -273,7 +284,7 @@ webSocketServer.on("connection", (socket) => {
     handleMessage(socket, message);
   });
 
-  socket.on("close", () => leaveRoom(socket, "disconnected"));
+  socket.on("close", () => leaveRoom(socket));
 });
 
 server.listen(port, "0.0.0.0", () => {

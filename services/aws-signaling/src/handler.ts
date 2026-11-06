@@ -96,41 +96,44 @@ function sendError(event: WebSocketEvent, message: string) {
 async function getMembership(connectionId: string) {
   const result = await documentClient.send(new GetCommand({
     TableName: tableName,
-    Key: membershipKey(connectionId)
+    Key: membershipKey(connectionId),
+    ConsistentRead: true
   }));
-  return result.Item as Membership | undefined;
+  const membership = result.Item as Membership | undefined;
+  return membership && membership.expiresAt > Math.floor(Date.now() / 1000) ? membership : undefined;
 }
 
 async function getRoom(roomId: string) {
   const result = await documentClient.send(new GetCommand({
     TableName: tableName,
-    Key: roomKey(roomId)
+    Key: roomKey(roomId),
+    ConsistentRead: true
   }));
   const room = result.Item as Room | undefined;
   // DynamoDB TTL removal is asynchronous, so enforce expiry in application code too.
   return room && room.expiresAt > Math.floor(Date.now() / 1000) ? room : undefined;
 }
 
-async function refreshSession(connectionId: string, roomId: string) {
-  // Refresh both rows together so a long-running room does not lose its
-  // membership while its room record is kept alive by heartbeats.
+async function refreshSession(connectionId: string, membership: Membership) {
   const expiry = expiresAt();
-  await Promise.all([
-    documentClient.send(new UpdateCommand({
-      TableName: tableName,
-      Key: roomKey(roomId),
-      UpdateExpression: "SET expiresAt = :expiresAt",
-      ExpressionAttributeValues: { ":expiresAt": expiry },
-      ConditionExpression: "attribute_exists(pk)"
-    })),
-    documentClient.send(new UpdateCommand({
-      TableName: tableName,
-      Key: membershipKey(connectionId),
-      UpdateExpression: "SET expiresAt = :expiresAt",
-      ExpressionAttributeValues: { ":expiresAt": expiry },
-      ConditionExpression: "attribute_exists(pk)"
-    }))
-  ]);
+  const now = Math.floor(Date.now() / 1000);
+  // TTL deletion is delayed. A heartbeat must never revive an expired room,
+  // extend someone else's slot, or update just one half of the membership.
+  await documentClient.send(new TransactWriteCommand({ TransactItems: [
+    { Update: {
+      TableName: tableName, Key: roomKey(membership.roomId),
+      UpdateExpression: "SET expiresAt = :expiry",
+      ConditionExpression: "#connection = :connection AND expiresAt > :now",
+      ExpressionAttributeNames: { "#connection": membership.role === "teacher" ? "teacherConnectionId" : "studentConnectionId" },
+      ExpressionAttributeValues: { ":connection": connectionId, ":expiry": expiry, ":now": now }
+    } },
+    { Update: {
+      TableName: tableName, Key: membershipKey(connectionId),
+      UpdateExpression: "SET expiresAt = :expiry",
+      ConditionExpression: "roomId = :room AND expiresAt > :now",
+      ExpressionAttributeValues: { ":room": membership.roomId, ":expiry": expiry, ":now": now }
+    } }
+  ] }));
 }
 
 async function createRoom(event: WebSocketEvent) {
@@ -216,8 +219,9 @@ async function joinRoom(event: WebSocketEvent, roomId: string) {
   }
 
   await sendTo(event, connectionId, { type: "room-joined", roomId });
-  if (room.teacherEntered) {
-    await sendTo(event, room.teacherConnectionId, { type: "peer-joined", roomId });
+  const joinedRoom = await getRoom(roomId);
+  if (joinedRoom?.teacherEntered) {
+    await sendTo(event, joinedRoom.teacherConnectionId, { type: "peer-joined", roomId });
   }
 }
 
@@ -251,8 +255,11 @@ async function setMeetingPresence(event: WebSocketEvent, membership: Membership,
     roomId: room.roomId
   });
 
-  const peerConnectionId = isTeacher ? room.studentConnectionId : room.teacherConnectionId;
-  const peerEntered = isTeacher ? room.studentEntered : room.teacherEntered;
+  // Re-read after the write: both participants may enter concurrently.
+  const latestRoom = await getRoom(room.roomId);
+  if (!latestRoom) return;
+  const peerConnectionId = isTeacher ? latestRoom.studentConnectionId : latestRoom.teacherConnectionId;
+  const peerEntered = isTeacher ? latestRoom.studentEntered : latestRoom.teacherEntered;
   if (!peerConnectionId || !peerEntered) return;
 
   if (entering) {
@@ -278,7 +285,7 @@ async function leaveRoom(event: WebSocketEvent, connectionId: string) {
     }
     await documentClient.send(new TransactWriteCommand({ TransactItems: deletes }));
     if (room?.studentConnectionId && room.studentConnectionId !== connectionId) {
-      await sendTo(event, room.studentConnectionId, { type: "peer-left", roomId: membership.roomId });
+      await sendTo(event, room.studentConnectionId, { type: "room-closed", roomId: membership.roomId, reason: "The teacher connection closed. Ask for a new lesson link." });
     }
     return;
   }
@@ -308,6 +315,7 @@ async function leaveRoom(event: WebSocketEvent, connectionId: string) {
 }
 
 async function relay(event: WebSocketEvent, membership: Membership, room: Room, message: ClientMessage) {
+  if (!room.teacherEntered || !room.studentEntered) return;
   const isTeacher = membership.role === "teacher";
   const peerConnectionId = isTeacher ? room.studentConnectionId : room.teacherConnectionId;
   if (!peerConnectionId) {
@@ -338,7 +346,7 @@ async function handleMessage(event: WebSocketEvent, message: ClientMessage) {
   const connectionId = event.requestContext.connectionId;
   if (message.type === "heartbeat") {
     const membership = await getMembership(connectionId);
-    if (membership) await refreshSession(connectionId, membership.roomId);
+    if (membership) await refreshSession(connectionId, membership);
     await sendTo(event, connectionId, { type: "server-ready", protocolVersion: PROTOCOL_VERSION });
     return;
   }
@@ -353,7 +361,7 @@ async function handleMessage(event: WebSocketEvent, message: ClientMessage) {
   }
 
   const room = await getRoom(membership.roomId);
-  if (!room) {
+  if (!room || (membership.role === "teacher" ? room.teacherConnectionId : room.studentConnectionId) !== connectionId) {
     await sendError(event, "This lesson has ended.");
     return;
   }

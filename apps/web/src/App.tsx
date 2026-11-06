@@ -1,3 +1,4 @@
+import { MicrophoneSettings } from "./components/MicrophoneSettings";
 import { useEffect, useState } from "react";
 import { CameraPreview } from "./components/CameraPreview";
 import { StudentLesson } from "./components/StudentLesson";
@@ -144,6 +145,10 @@ function TeacherSetup() {
   }, [permission]);
 
   function selectDevice(role: VideoRole, deviceId: string) {
+    const pairedRole = role === "face" ? "document" : "face";
+    if (deviceId && deviceId === selectedDevices[pairedRole]) {
+      setViewTransforms((current) => ({ ...current, [role]: current[pairedRole] }));
+    }
     setSelectedDevices((current) => ({
       ...current,
       [role]: deviceId || null
@@ -175,6 +180,7 @@ function TeacherSetup() {
 
   function exitMeeting() {
     setInMeeting(false);
+    setSelectedDevices({ face: null, document: null });
     lesson.exitRoom();
   }
 
@@ -183,33 +189,7 @@ function TeacherSetup() {
   const rolesShareCamera = Boolean(selectedDevices.face && selectedDevices.face === selectedDevices.document);
   const meetingCameraSettings = (
     <div className="meeting-view-settings">
-      <fieldset>
-        <legend>Microphone</legend>
-        {audioInputs.permissionReady && audioInputs.devices.length > 0 ? (
-          <label>
-            Input device
-            <select aria-label="Microphone to send to the student" value={audioInputs.selectedDeviceId} onChange={(event) => audioInputs.setSelectedDeviceId(event.target.value)}>
-              <option value="">System default</option>
-              {audioInputs.devices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label}</option>)}
-            </select>
-          </label>
-        ) : (
-          <button className="meeting-permission-button" type="button" onClick={() => void audioInputs.requestAccess(lesson.audioEnabled)}>
-            Choose microphone
-          </button>
-        )}
-        <p className="settings-help-copy">Microphone changes apply immediately. Echo cancellation, noise suppression, and automatic gain start enabled.</p>
-        <label className="meeting-settings-check">
-          <input type="checkbox" checked={audioProcessing.noiseSuppression} onChange={(event) => setAudioProcessing((current) => ({ ...current, noiseSuppression: event.target.checked }))} />
-          Noise suppression
-        </label>
-        <label className="meeting-settings-check">
-          <input type="checkbox" checked={audioProcessing.autoGainControl} onChange={(event) => setAudioProcessing((current) => ({ ...current, autoGainControl: event.target.checked }))} />
-          Automatic microphone gain
-        </label>
-        <p className="settings-help-copy">Try turning off one setting at a time if your voice sounds robotic or uneven. Echo cancellation stays on. A change briefly reconnects your microphone.</p>
-        {audioInputs.error && <p className="settings-help-copy" role="status">{audioInputs.error}</p>}
-      </fieldset>
+      <MicrophoneSettings inputs={audioInputs} enabled={lesson.audioEnabled} processing={audioProcessing} onChange={setAudioProcessing} />
       {(["face", "document"] as const).map((role) => (
         <fieldset key={role}>
           <legend>{roleLabels[role]}</legend>
@@ -258,6 +238,7 @@ function TeacherSetup() {
         remoteAudio={lesson.remoteStream}
         microphoneEnabled={lesson.audioEnabled}
         remoteMicrophoneEnabled={lesson.remoteAudioEnabled}
+        qualitySamples={lesson.qualitySamples}
         audioError={lesson.audioError}
         videoError={lesson.videoError}
         mainRotation={0}
@@ -323,7 +304,7 @@ function TeacherSetup() {
                   {copiedLink ? "Copied" : "Copy link"}
                 </button>
               </div>
-              <button className="primary-button lesson-action" type="button" onClick={() => { setInMeeting(true); lesson.enterRoom(); }}>Login</button>
+              <button className="primary-button lesson-action" type="button" onClick={() => { setInMeeting(true); lesson.enterRoom(); }}>Join lesson</button>
             </>
           )}
           <p className="lesson-note">Selected cameras are shared with your student while they are connected.</p>
