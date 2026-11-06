@@ -17,8 +17,8 @@ by the owner and eligible participants, not public discovery.
    The app uses its hosted sign-in page and a public OAuth client with authorization
    code + PKCE. There is no browser client secret. `oidc-client-ts` manages state,
    nonce, callback validation and refresh tokens instead of handwritten OAuth.
-2. The first implementation uses verified email plus password. This is the stated
-   default pending the owner's preference about email codes on every login.
+2. The owner confirmed verified email plus password for the first registration
+   flow. Verify the address at registration, then sign in with email and password.
    Email OTP is an alternative, but Cognito requires Essentials or higher and
    SES configuration for that flow. The current pilot has no owned email domain.
    Classic hosted UI on Lite and Cognito's default verification email allow a
