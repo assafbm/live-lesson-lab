@@ -4,6 +4,7 @@ import type { ClientMessage, IceCandidatePayload, MediaRole, ParticipantRole, Se
 import { summarizeMediaQuality, type MediaQualitySample, type PreviousMediaStats } from "./MediaQuality";
 import { cameraSourceManager } from "./CameraSourceManager";
 import { OutgoingVideoTransform, type VideoTransform } from "./OutgoingVideoTransform";
+import { getIdentityToken } from "../auth/identity";
 
 export type VideoSelections = Record<MediaRole, string | null>;
 export type OutgoingVideoTransforms = Record<MediaRole, VideoTransform>;
@@ -32,13 +33,15 @@ function parseServerMessage(payload: string): ServerMessage | null {
     const candidate = message as Record<string, unknown>;
 
     switch (candidate.type) {
+      case "authenticated": return { type: "authenticated" };
+      case "authentication-error": return typeof candidate.message === "string" ? { type: "authentication-error", message: candidate.message } : null;
       case "room-access":
         return typeof candidate.roomId === "string" && typeof candidate.locked === "boolean"
           && typeof candidate.joinExpiresAt === "number" && Number.isFinite(candidate.joinExpiresAt)
           ? { type: "room-access", roomId: candidate.roomId, locked: candidate.locked, joinExpiresAt: candidate.joinExpiresAt } : null;
       case "server-ready":
         return typeof candidate.protocolVersion === "number"
-          ? { type: "server-ready", protocolVersion: candidate.protocolVersion as typeof PROTOCOL_VERSION }
+          ? { type: "server-ready", protocolVersion: candidate.protocolVersion as typeof PROTOCOL_VERSION, authenticationRequired: candidate.authenticationRequired === true }
           : null;
       case "room-created":
       case "room-joined":
@@ -795,24 +798,33 @@ export function useLessonSession(
     const connectTimer = window.setTimeout(() => {
       if (disposed) return;
       const activeSocket = new WebSocket(socketUrl);
+      let identityAccepted = false;
       socket = activeSocket;
       socketRef.current = activeSocket;
 
       activeSocket.addEventListener("open", () => {
         if (disposed || socketRef.current !== activeSocket) return;
-        setSignalingReady(true);
-        setStatus("ready");
-        setStatusMessage("Connected to the lesson service.");
+        setSignalingReady(false);
+        setStatusMessage("Verifying your lesson session…");
         // API Gateway completes the WebSocket handshake before the Lambda
         // integration can send data back. This first heartbeat asks the
         // serverless adapter for its versioned `server-ready` message. The
         // local Node server already sends that greeting as soon as it connects.
-        activeSocket.send(JSON.stringify({ type: "heartbeat" } satisfies ClientMessage));
+        const authenticate = async () => {
+          try {
+            const token = await getIdentityToken();
+            if (disposed || activeSocket.readyState !== WebSocket.OPEN) return;
+            activeSocket.send(JSON.stringify(token ? { type: "authenticate", token } : { type: "heartbeat" }));
+          } catch {
+            if (!disposed) window.dispatchEvent(new Event("lesson-auth-expired"));
+          }
+        };
+        void authenticate();
         // A small keepalive helps intermediaries preserve an otherwise quiet
         // signaling socket. Lesson media still flows directly between browsers.
         heartbeatTimer = window.setInterval(() => {
           if (activeSocket.readyState === WebSocket.OPEN) {
-            activeSocket.send(JSON.stringify({ type: "heartbeat" } satisfies ClientMessage));
+            void authenticate();
           }
         }, 5 * 60 * 1000);
       });
@@ -827,9 +839,26 @@ export function useLessonSession(
 
       if (message.type === "server-ready") {
         if (message.protocolVersion !== PROTOCOL_VERSION) {
+          setSignalingReady(false);
           setStatus("failed");
           setStatusMessage("The web app and signaling service use different protocol versions.");
+        } else if (!message.authenticationRequired || identityAccepted) {
+          setSignalingReady(true);
+          if (!roomIdRef.current) { setStatus("ready"); setStatusMessage(identityAccepted ? "Verified and connected to the lesson service." : "Connected to the local lesson service."); }
         }
+        return;
+      }
+      if (message.type === "authenticated") {
+        identityAccepted = true;
+        // The acknowledgement proves the renewed identity was stored before
+        // we refresh room membership. API Gateway messages may run concurrently.
+        activeSocket.send(JSON.stringify({ type: "heartbeat" } satisfies ClientMessage));
+        return;
+      }
+      if (message.type === "authentication-error") {
+        setSignalingReady(false);
+        closePeerConnection();
+        window.dispatchEvent(new Event("lesson-auth-expired"));
         return;
       }
       if (message.type === "room-created") {

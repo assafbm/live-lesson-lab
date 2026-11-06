@@ -1,6 +1,7 @@
 {
   "app": "npx ts-node --prefer-ts-exts bin/live-lesson-lab.ts",
   "context": {
+    "authCallbackOrigin": "https://d14zq4wr2313jx.cloudfront.net",
     "@aws-cdk/core:checkSecretUsage": true,
     "@aws-cdk/aws-ec2:ebsDefaultGp3Volume": true
   }

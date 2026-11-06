@@ -51,7 +51,14 @@ jobs:
           npm test
 
       - name: Verify deployment configuration
+        env:
+          VITE_AUTH_AUTHORITY: ${{ vars.VITE_AUTH_AUTHORITY }}
+          VITE_AUTH_CLIENT_ID: ${{ vars.VITE_AUTH_CLIENT_ID }}
+          VITE_AUTH_DOMAIN: ${{ vars.VITE_AUTH_DOMAIN }}
         run: |
+          test -n "$VITE_AUTH_AUTHORITY" || (echo "Missing VITE_AUTH_AUTHORITY" && exit 1)
+          test -n "$VITE_AUTH_CLIENT_ID" || (echo "Missing VITE_AUTH_CLIENT_ID" && exit 1)
+          test -n "$VITE_AUTH_DOMAIN" || (echo "Missing VITE_AUTH_DOMAIN" && exit 1)
           test -n "$WEBAPP_BUCKET" || (echo "Missing repository variable: WEBAPP_BUCKET" && exit 1)
           test -n "$CLOUDFRONT_DISTRIBUTION_ID" || (echo "Missing repository variable: CLOUDFRONT_DISTRIBUTION_ID" && exit 1)
           test -n "$VITE_SIGNALING_URL" || (echo "Missing repository variable: VITE_SIGNALING_URL" && exit 1)
@@ -61,6 +68,10 @@ jobs:
         run: npm run build --workspace @live-lesson-lab/shared
 
       - name: Build the web app
+        env:
+          VITE_AUTH_AUTHORITY: ${{ vars.VITE_AUTH_AUTHORITY }}
+          VITE_AUTH_CLIENT_ID: ${{ vars.VITE_AUTH_CLIENT_ID }}
+          VITE_AUTH_DOMAIN: ${{ vars.VITE_AUTH_DOMAIN }}
         run: npm run build --workspace @live-lesson-lab/web
 
       - name: Configure short-lived AWS credentials

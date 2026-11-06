@@ -7,8 +7,10 @@ import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import { isInvitationOpen, INVITATION_LIFETIME_MS, MAX_SIGNALING_BYTES, PROTOCOL_VERSION, parseClientMessage } from "@live-lesson-lab/shared";
 import type { ClientMessage, ServerMessage } from "@live-lesson-lab/shared";
+import { createIdentityVerifier, type VerifiedIdentity } from "@live-lesson-lab/shared/identity";
 
 type Room = {
+  ownerUserId: string;
   locked: boolean;
   joinExpiresAt: number;
   teacher: WebSocket;
@@ -27,6 +29,13 @@ type Membership = {
 const port = Number(process.env.PORT ?? process.env.SIGNALING_PORT ?? 3001);
 const rooms = new Map<string, Room>();
 const memberships = new Map<WebSocket, Membership>();
+const identities = new Map<WebSocket, VerifiedIdentity>();
+const verifyIdentity = process.env.AUTH_USER_POOL_ID && process.env.AUTH_CLIENT_ID
+  ? createIdentityVerifier(process.env.AUTH_USER_POOL_ID, process.env.AUTH_CLIENT_ID) : null;
+// Anonymous mode is a loopback-only development aid, never a production fallback.
+const anonymousLocal = !process.env.AUTH_USER_POOL_ID && !process.env.AUTH_CLIENT_ID
+  && process.env.NODE_ENV !== "production" && process.env.ALLOW_ANONYMOUS_LOCAL !== "false";
+if (!verifyIdentity && !anonymousLocal) throw new Error("Configure Cognito identity before serving authenticated lessons.");
 const serveWebApp = process.env.NODE_ENV === "production";
 // The built web app is a sibling workspace in this monorepo. Resolving from
 // this compiled file keeps the path stable regardless of the process cwd.
@@ -174,9 +183,13 @@ function relay(socket: WebSocket, membership: Membership, room: Room, message: C
 }
 
 function handleMessage(socket: WebSocket, message: ClientMessage) {
+  if (message.type === "authenticate") return;
   // A WebSocket keepalive can preserve quiet sessions through intermediaries;
   // the actual lesson media continues directly between browsers.
-  if (message.type === "heartbeat") return;
+  if (message.type === "heartbeat") {
+    send(socket, { type: "server-ready", protocolVersion: PROTOCOL_VERSION, authenticationRequired: !anonymousLocal });
+    return;
+  }
 
   if (message.type === "create-room") {
     if (memberships.has(socket)) {
@@ -185,7 +198,7 @@ function handleMessage(socket: WebSocket, message: ClientMessage) {
     }
 
     const roomId = randomUUID();
-    const room: Room = { teacher: socket, teacherEntered: false, student: null, studentEntered: false,
+    const room: Room = { ownerUserId: identities.get(socket)!.userId, teacher: socket, teacherEntered: false, student: null, studentEntered: false,
       locked: false, joinExpiresAt: Date.now() + INVITATION_LIFETIME_MS };
     rooms.set(roomId, room);
     memberships.set(socket, { roomId, role: "teacher" });
@@ -209,6 +222,10 @@ function handleMessage(socket: WebSocket, message: ClientMessage) {
       sendError(socket, "This lesson already has a student connected.");
       return;
     }
+    if (room.ownerUserId === identities.get(socket)?.userId) {
+      sendError(socket, "Use a different verified account for the student role.");
+      return;
+    }
     if (!isInvitationOpen(room)) {
       sendError(socket, "This invitation is locked or expired. Ask the teacher to reopen access.");
       return;
@@ -225,7 +242,8 @@ function handleMessage(socket: WebSocket, message: ClientMessage) {
   if (message.type === "set-room-locked" || message.type === "renew-invitation" || message.type === "end-room") {
     const membership = memberships.get(socket);
     const room = rooms.get(message.roomId);
-    if (!membership || membership.role !== "teacher" || membership.roomId !== message.roomId || room?.teacher !== socket) {
+    if (!membership || membership.role !== "teacher" || membership.roomId !== message.roomId || room?.teacher !== socket
+      || room.ownerUserId !== identities.get(socket)?.userId) {
       sendError(socket, "Only the room's teacher can change access or end the lesson.");
       return;
     }
@@ -288,8 +306,10 @@ function handleMessage(socket: WebSocket, message: ClientMessage) {
 }
 
 webSocketServer.on("connection", (socket) => {
+  if (anonymousLocal) identities.set(socket, { userId: `local-${randomUUID()}`, email: "development-only@localhost", expiresAt: Number.MAX_SAFE_INTEGER });
   // A small versioned greeting confirms connectivity before room messages begin.
-  send(socket, { type: "server-ready", protocolVersion: PROTOCOL_VERSION });
+  send(socket, { type: "server-ready", protocolVersion: PROTOCOL_VERSION, authenticationRequired: !anonymousLocal });
+  let queue = Promise.resolve();
 
   // A per-socket token bucket permits ICE bursts but bounds sustained abuse.
   let tokens = 80;
@@ -311,12 +331,30 @@ webSocketServer.on("connection", (socket) => {
       sendError(socket, "The signaling message is invalid or unsupported.");
       return;
     }
-    handleMessage(socket, message);
+    queue = queue.then(async () => {
+      if (socket.readyState !== WebSocket.OPEN) return;
+      if (message.type === "authenticate") {
+        if (!verifyIdentity) { sendError(socket, "Identity is not enabled in this local session."); return; }
+        const identity = await verifyIdentity(message.token);
+        const current = identities.get(socket);
+        if (current && current.userId !== identity.userId) throw new Error("Account switch requires a new connection");
+        if (socket.readyState !== WebSocket.OPEN) return;
+        identities.set(socket, identity);
+        send(socket, { type: "authenticated" });
+        return;
+      }
+      const identity = identities.get(socket);
+      if (!identity || identity.expiresAt <= Date.now() / 1000) {
+        send(socket, { type: "authentication-error", message: "Sign in with a verified email to continue." });
+        return;
+      }
+      handleMessage(socket, message);
+    }).catch(() => send(socket, { type: "authentication-error", message: "Sign in with a verified email to continue." }));
   });
 
-  socket.on("close", () => leaveRoom(socket));
+  socket.on("close", () => { leaveRoom(socket); identities.delete(socket); });
 });
 
-server.listen(port, "0.0.0.0", () => {
+server.listen(port, anonymousLocal ? "127.0.0.1" : "0.0.0.0", () => {
   console.log(`Signaling server listening on http://localhost:${port}`);
 });

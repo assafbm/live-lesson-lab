@@ -5,11 +5,13 @@ import {
   DeleteCommand,
   DynamoDBDocumentClient,
   GetCommand,
+  PutCommand,
   TransactWriteCommand,
   UpdateCommand
 } from "@aws-sdk/lib-dynamodb";
 import { isInvitationOpen, INVITATION_LIFETIME_MS, PROTOCOL_VERSION, parseClientMessage } from "@live-lesson-lab/shared";
 import type { ClientMessage, ParticipantRole, ServerMessage } from "@live-lesson-lab/shared";
+import { createIdentityVerifier, type VerifiedIdentity } from "@live-lesson-lab/shared/identity";
 
 type WebSocketEvent = {
   requestContext: {
@@ -22,6 +24,7 @@ type WebSocketEvent = {
 };
 
 type Membership = {
+  userId: string;
   pk: string;
   sk: "MEMBERSHIP";
   roomId: string;
@@ -30,6 +33,7 @@ type Membership = {
 };
 
 type Room = {
+  ownerUserId: string;
   locked: boolean;
   joinExpiresAt: number;
   pk: string;
@@ -44,6 +48,16 @@ type Room = {
 
 const tableName = process.env.ROOMS_TABLE;
 if (!tableName) throw new Error("ROOMS_TABLE must be configured for the AWS signaling handler.");
+const lessonsTable = process.env.LESSONS_TABLE;
+const verifyIdentity = process.env.AUTH_USER_POOL_ID && process.env.AUTH_CLIENT_ID
+  ? createIdentityVerifier(process.env.AUTH_USER_POOL_ID, process.env.AUTH_CLIENT_ID) : null;
+
+const identityKey = (connectionId: string) => ({ pk: `AUTH#${connectionId}`, sk: "IDENTITY" });
+const lessonKey = (roomId: string) => ({ pk: `LESSON#${roomId}`, sk: "METADATA" });
+function participantItem(roomId: string, identity: VerifiedIdentity, role: ParticipantRole) {
+  return { pk: `LESSON#${roomId}`, sk: `PARTICIPANT#${identity.userId}`, userId: identity.userId,
+    verifiedEmail: identity.email, role, admittedAt: new Date().toISOString() };
+}
 
 const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true }
@@ -138,7 +152,8 @@ async function refreshSession(connectionId: string, membership: Membership) {
   ] }));
 }
 
-async function createRoom(event: WebSocketEvent) {
+async function createRoom(event: WebSocketEvent, identity: VerifiedIdentity) {
+  if (!lessonsTable) throw new Error("Lesson storage is not configured");
   const connectionId = event.requestContext.connectionId;
   if (await getMembership(connectionId)) {
     await sendError(event, "Leave the current room before creating another one.");
@@ -148,6 +163,7 @@ async function createRoom(event: WebSocketEvent) {
   const roomId = randomUUID();
   const expiry = expiresAt();
   const room: Room = {
+    ownerUserId: identity.userId,
     ...roomKey(roomId),
     roomId,
     teacherConnectionId: connectionId,
@@ -158,6 +174,7 @@ async function createRoom(event: WebSocketEvent) {
     expiresAt: expiry
   };
   const membership: Membership = {
+    userId: identity.userId,
     ...membershipKey(connectionId),
     roomId,
     role: "teacher",
@@ -167,14 +184,18 @@ async function createRoom(event: WebSocketEvent) {
   await documentClient.send(new TransactWriteCommand({
     TransactItems: [
       { Put: { TableName: tableName, Item: room, ConditionExpression: "attribute_not_exists(pk)" } },
-      { Put: { TableName: tableName, Item: membership, ConditionExpression: "attribute_not_exists(pk)" } }
+      { Put: { TableName: tableName, Item: membership, ConditionExpression: "attribute_not_exists(pk)" } },
+      { Put: { TableName: lessonsTable, Item: { ...lessonKey(roomId), ownerUserId: identity.userId,
+        createdAt: new Date().toISOString(), status: "open" }, ConditionExpression: "attribute_not_exists(pk)" } },
+      { Put: { TableName: lessonsTable, Item: participantItem(roomId, identity, "teacher"), ConditionExpression: "attribute_not_exists(pk)" } }
     ]
   }));
   await sendTo(event, connectionId, { type: "room-created", roomId });
   await sendTo(event, connectionId, { type: "room-access", roomId, locked: room.locked, joinExpiresAt: room.joinExpiresAt });
 }
 
-async function joinRoom(event: WebSocketEvent, roomId: string) {
+async function joinRoom(event: WebSocketEvent, roomId: string, identity: VerifiedIdentity) {
+  if (!lessonsTable) throw new Error("Lesson storage is not configured");
   const connectionId = event.requestContext.connectionId;
   if (await getMembership(connectionId)) {
     await sendError(event, "Leave the current room before joining another one.");
@@ -184,6 +205,10 @@ async function joinRoom(event: WebSocketEvent, roomId: string) {
   const room = await getRoom(roomId);
   if (!room) {
     await sendError(event, "This lesson link is invalid or the room has ended.");
+    return;
+  }
+  if (room.ownerUserId === identity.userId) {
+    await sendError(event, "Use a different verified account for the student role.");
     return;
   }
   if (room.studentConnectionId) {
@@ -221,10 +246,11 @@ async function joinRoom(event: WebSocketEvent, roomId: string) {
         {
           Put: {
             TableName: tableName,
-            Item: { ...membershipKey(connectionId), roomId, role: "student", expiresAt: expiry } satisfies Membership,
+            Item: { ...membershipKey(connectionId), userId: identity.userId, roomId, role: "student", expiresAt: expiry } satisfies Membership,
             ConditionExpression: "attribute_not_exists(pk)"
           }
-        }
+        },
+        { Put: { TableName: lessonsTable, Item: participantItem(roomId, identity, "student") } }
       ]
     }));
   } catch {
@@ -297,7 +323,12 @@ async function leaveRoom(event: WebSocketEvent, connectionId: string, reason = "
     if (room?.studentConnectionId) {
       deletes.push({ Delete: { TableName: tableName, Key: membershipKey(room.studentConnectionId) } });
     }
-    await documentClient.send(new TransactWriteCommand({ TransactItems: deletes }));
+    // Close durable metadata in the same transaction as the routing deletion.
+    const closeRecord = lessonsTable ? [{ Update: { TableName: lessonsTable, Key: lessonKey(membership.roomId),
+        UpdateExpression: "SET #status = :closed, endedAt = :ended", ConditionExpression: "attribute_exists(pk)",
+        ExpressionAttributeNames: { "#status": "status" },
+        ExpressionAttributeValues: { ":closed": "closed", ":ended": new Date().toISOString() } } }] : [];
+    await documentClient.send(new TransactWriteCommand({ TransactItems: [...deletes, ...closeRecord] }));
     if (room?.studentConnectionId && room.studentConnectionId !== connectionId) {
       await sendTo(event, room.studentConnectionId, { type: "room-closed", roomId: membership.roomId, reason });
     }
@@ -356,26 +387,31 @@ async function relay(event: WebSocketEvent, membership: Membership, room: Room, 
   }
 }
 
-async function handleMessage(event: WebSocketEvent, message: ClientMessage) {
+async function handleMessage(event: WebSocketEvent, message: ClientMessage, identity: VerifiedIdentity) {
   const connectionId = event.requestContext.connectionId;
-  if (message.type === "heartbeat") {
-    const membership = await getMembership(connectionId);
-    if (membership) await refreshSession(connectionId, membership);
-    await sendTo(event, connectionId, { type: "server-ready", protocolVersion: PROTOCOL_VERSION });
+  const membership = await getMembership(connectionId);
+  if (membership && membership.userId !== identity.userId) {
+    await sendError(event, "This connection belongs to a different account. Sign in again.");
     return;
   }
-  if (message.type === "create-room") return createRoom(event);
-  if (message.type === "join-room") return joinRoom(event, message.roomId);
+  if (message.type === "heartbeat") {
+    if (membership) await refreshSession(connectionId, membership);
+    await sendTo(event, connectionId, { type: "server-ready", protocolVersion: PROTOCOL_VERSION, authenticationRequired: true });
+    return;
+  }
+  if (message.type === "create-room") return createRoom(event, identity);
+  if (message.type === "join-room") return joinRoom(event, message.roomId, identity);
+  if (message.type === "authenticate") return;
   if (message.type === "leave-room") return leaveRoom(event, connectionId);
 
-  const membership = await getMembership(connectionId);
   if (!membership || message.roomId !== membership.roomId) {
     await sendError(event, "Join a lesson before sending WebRTC messages.");
     return;
   }
 
   const room = await getRoom(membership.roomId);
-  if (!room || (membership.role === "teacher" ? room.teacherConnectionId : room.studentConnectionId) !== connectionId) {
+  if (!room || (membership.role === "teacher" ? room.teacherConnectionId : room.studentConnectionId) !== connectionId
+    || (membership.role === "teacher" && room.ownerUserId !== identity.userId)) {
     await sendError(event, "This lesson has ended.");
     return;
   }
@@ -420,6 +456,7 @@ export async function handler(event: WebSocketEvent) {
     if (routeKey === "$connect") return { statusCode: 200, body: "Connected" };
     if (routeKey === "$disconnect") {
       await leaveRoom(event, connectionId);
+      await documentClient.send(new DeleteCommand({ TableName: tableName, Key: identityKey(connectionId) }));
       return { statusCode: 200, body: "Disconnected" };
     }
 
@@ -429,7 +466,33 @@ export async function handler(event: WebSocketEvent) {
       return { statusCode: 200, body: "Ignored invalid message" };
     }
 
-    await handleMessage(event, message);
+    if (message.type === "authenticate") {
+      try {
+        if (!verifyIdentity) throw new Error("Identity service unavailable");
+        const identity = await verifyIdentity(message.token);
+        const membership = await getMembership(connectionId);
+        if (membership && membership.userId !== identity.userId) throw new Error("Account cannot change during a lesson");
+        // Reauthentication may refresh expiry but may not change the account
+        // behind an existing socket. Tokens are never stored or logged.
+        await documentClient.send(new PutCommand({ TableName: tableName,
+          Item: { ...identityKey(connectionId), ...identity },
+          ConditionExpression: "attribute_not_exists(pk) OR userId = :user",
+          ExpressionAttributeValues: { ":user": identity.userId } }));
+        await sendTo(event, connectionId, { type: "authenticated" });
+      } catch {
+        await sendTo(event, connectionId, { type: "authentication-error", message: "Sign in with a verified email to continue." });
+      }
+      return { statusCode: 200, body: "Authentication processed" };
+    }
+    const identityResult = await documentClient.send(new GetCommand({ TableName: tableName, Key: identityKey(connectionId), ConsistentRead: true }));
+    const identity = identityResult.Item as VerifiedIdentity | undefined;
+    if (!identity || identity.expiresAt <= Math.floor(Date.now() / 1000)) {
+      await sendTo(event, connectionId, message.type === "heartbeat"
+        ? { type: "server-ready", protocolVersion: PROTOCOL_VERSION, authenticationRequired: true }
+        : { type: "authentication-error", message: "Sign in with a verified email to continue." });
+      return { statusCode: 200, body: "Authentication required" };
+    }
+    await handleMessage(event, message, identity);
     return { statusCode: 200, body: "Message handled" };
   } catch (error) {
     // Never log SDP or ICE payloads; log only a safe error name for diagnosis.

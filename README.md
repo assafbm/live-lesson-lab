@@ -24,6 +24,14 @@ npm run dev
 
 Vite runs at `http://localhost:5173`; the signaling server health endpoint is at `http://localhost:3001/health`. During development, Vite proxies `/signal` WebSocket connections to the signaling server.
 
+Local development without identity settings remains anonymous and binds loopback.
+Production now requires verified email sign-in through Cognito. Configure all
+three `VITE_AUTH_*` values from the infrastructure outputs and `AUTH_USER_POOL_ID`
+plus `AUTH_CLIENT_ID` on the signaling server. Missing production settings deny
+access. The AWS stack supplies server settings automatically. See
+[the identity and recording decision](docs/decisions/0009-verified-identity-and-private-recordings.md)
+for rollout steps and the distinction between implemented identity and planned recording.
+
 For a local lesson, choose the teacher cameras and create a lesson link. The teacher then presses **Join lesson** to enter the waiting room. Open the copied student link in a second browser; the student chooses a camera and presses **Join lesson** as well. Teacher links use `?role=teacher`; student invitations use `?role=student&room=...`. Older `?room=...` links remain supported. The WebRTC call starts only when both roles have entered the room. Camera and microphone access require a secure browser context: `localhost` works in development, while another device needs an HTTPS origin. A plain `http://<LAN-IP>` address will generally not allow media capture.
 
 The current deployment direction is a domain-free AWS pilot in `eu-north-1`, using a CloudFront HTTPS address and API Gateway WSS address. An AWS Lambda adapter maps the shared WebSocket protocol to short-lived DynamoDB room records. The local Node.js signaling server remains available for development. WebRTC media remains peer-to-peer. TURN is a separate decision because Amazon Kinesis Video Streams is not part of AWS Free Tier. See [the current AWS decision](docs/decisions/0005-domain-free-aws-pilot.md). Do not put real student information into the pilot until teacher access control and expiring lesson invitations are implemented.

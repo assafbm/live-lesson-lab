@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { ParticipantRole } from "@live-lesson-lab/shared";
 import { MeetingVideoTile } from "./MeetingVideoTile";
+import { AccountControls } from "../auth/AuthGate";
 import { MediaDiagnostics } from "./MediaDiagnostics";
 import type { MediaQualitySample } from "../media/MediaQuality";
 
@@ -153,6 +154,7 @@ export function MeetingRoom({
             <button ref={closeSettingsButton} type="button" onClick={() => { setShowViewSettings(false); settingsButton.current?.focus(); }} aria-label="Close media settings">×</button>
           </div>
           {viewSettings}
+          <AccountControls />
           <MediaDiagnostics samples={qualitySamples} />
         </section>
       )}

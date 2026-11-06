@@ -421,3 +421,20 @@ Read [the consolidated decisions](development-decisions.md) for alternatives
 and [the review report](review-2026-11-06.md) for evidence and unresolved limits.
 The browser suite proves synthetic media flow and lifecycle behavior; a real
 two-device listening test is still needed to establish natural voice quality.
+
+## Verified accounts and future study recordings (2026-11-07)
+
+An email typed into a form proves nothing about who owns it. Cognito verifies the
+address and signs an identity token; the signaling server verifies that signature
+and the intended application before admitting room commands. A URL role is still
+only a requested role. The server decides ownership using a stable account ID.
+
+Temporary connections and durable lesson records have different lifetimes. We
+write admission and participant identity in one DynamoDB transaction so a failed
+join cannot create an apparent participant. Neither admission nor a verified
+email is recording consent; that is a separate future action.
+
+The planned recording is a composed study view, not the whole desktop: document
+or shared screen centrally, teacher upper right, student below, both voices.
+See [decision 0009](decisions/0009-verified-identity-and-private-recordings.md)
+for alternatives, security boundaries and what remains unimplemented.

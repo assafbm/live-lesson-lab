@@ -1,6 +1,6 @@
 // Keep protocol versioning in one package so client and server can reject
 // accidental mismatches before they start exchanging room messages.
-export const PROTOCOL_VERSION = 6 as const;
+export const PROTOCOL_VERSION = 7 as const;
 export const INVITATION_LIFETIME_MS = 30 * 60 * 1000;
 
 // Fixed invitation expiry is distinct from routing TTL. Missing fields from
@@ -28,6 +28,7 @@ export type IceCandidatePayload = {
 // This is the browser-to-server control protocol. The server relays WebRTC
 // setup messages but does not inspect or forward audio/video media.
 export type ClientMessage =
+  | { type: "authenticate"; token: string }
   | { type: "heartbeat" }
   | { type: "create-room" }
   | { type: "join-room"; roomId: string }
@@ -44,7 +45,9 @@ export type ClientMessage =
   | { type: "video-role-state"; roomId: string; roles: VideoRoleState };
 
 export type ServerMessage =
-  | { type: "server-ready"; protocolVersion: typeof PROTOCOL_VERSION }
+  | { type: "server-ready"; protocolVersion: typeof PROTOCOL_VERSION; authenticationRequired?: boolean }
+  | { type: "authenticated" }
+  | { type: "authentication-error"; message: string }
   | { type: "room-created"; roomId: string }
   | { type: "room-access"; roomId: string; locked: boolean; joinExpiresAt: number }
   | { type: "room-joined"; roomId: string }
@@ -98,6 +101,9 @@ export function parseClientMessage(payload: string): ClientMessage | null {
   if (!isRecord(value) || typeof value.type !== "string") return null;
 
   switch (value.type) {
+    case "authenticate":
+      return typeof value.token === "string" && value.token.length > 0 && value.token.length <= 16000
+        ? { type: "authenticate", token: value.token } : null;
     case "heartbeat":
     case "create-room":
     case "leave-room":

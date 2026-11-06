@@ -136,3 +136,17 @@ use physical capture devices, or replace the separate-device acceptance checklis
 5. Manual tests on two computers and different networks, including TURN, device removal, permission denial, and audio autoplay.
 
 A successful localhost connection is not proof that lessons will work reliably over the internet.
+
+## Verified identity branch validation
+
+The identity increment adds signed JWT verification tests (including signature,
+issuer, audience, expiry, token-use and email verification rejection), AWS adapter
+tests for authenticated ownership and atomic participation records, and local
+server checks against anonymous production/partial configuration. The full suite
+contains 28 tests. AWS tests mock the SDK transport; they do not contact AWS.
+
+A separate local browser check of the production build with identity settings
+absent confirmed an explicit configuration error, no signaling connection and
+no horizontal overflow at 390px and 1366px. Real Cognito signup/email delivery,
+invitation return and two authenticated accounts still require a staged rollout.
+There is no recorder yet, so no recording/export quality claim is made.

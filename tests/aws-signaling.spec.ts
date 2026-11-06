@@ -11,7 +11,10 @@ let writes: any[];
 let delivered: any[];
 test.beforeEach(() => {
   process.env.ROOMS_TABLE = "test-rooms";
-  rows = {};
+  process.env.LESSONS_TABLE = "test-lessons";
+  rows = Object.fromEntries(["teacher", "student"].map((role) => [`AUTH#${role}`, {
+    userId: role, email: `${role}@example.test`, expiresAt: Math.floor(Date.now() / 1000) + 3600
+  }]));
   writes = [];
   delivered = [];
   DynamoDBDocumentClient.prototype.send = (async (command: any) => {
@@ -40,8 +43,8 @@ async function handle(message: object, connectionId = "student") {
   return handler({ requestContext: { routeKey: "$default", connectionId, domainName: "example.invalid", stage: "test" }, body: JSON.stringify(message) });
 }
 function seed(expiresAt = Math.floor(Date.now() / 1000) + 300) {
-  rows["CONNECTION#student"] = { roomId: "room", role: "student", expiresAt };
-  rows["ROOM#room"] = { roomId: "room", teacherConnectionId: "teacher", studentConnectionId: "student", teacherEntered: true, studentEntered: true, expiresAt };
+  rows["CONNECTION#student"] = { roomId: "room", userId: "student", role: "student", expiresAt };
+  rows["ROOM#room"] = { roomId: "room", ownerUserId: "teacher", teacherConnectionId: "teacher", studentConnectionId: "student", teacherEntered: true, studentEntered: true, expiresAt };
 }
 test("AWS handler rejects expired memberships and cross-room traffic", async () => {
   seed(1);
@@ -100,7 +103,7 @@ test("AWS students cannot renew invitations, lock joins, or end rooms", async ()
 
 test("AWS teacher access updates condition on ownership and expiry and return acknowledged state", async () => {
   seed();
-  rows["CONNECTION#teacher"] = { ...rows["CONNECTION#student"], role: "teacher" };
+  rows["CONNECTION#teacher"] = { ...rows["CONNECTION#student"], userId: "teacher", role: "teacher" };
   rows["ROOM#room"].locked = true;
   rows["ROOM#room"].joinExpiresAt = 1;
   await handle({ type: "renew-invitation", roomId: "room" }, "teacher");
@@ -112,4 +115,51 @@ test("AWS teacher access updates condition on ownership and expiry and return ac
   await handle({ type: "set-room-locked", roomId: "room", locked: false }, "teacher");
   expect(delivered.at(-1).locked).toBe(false);
   expect(delivered.at(-1).joinExpiresAt).toBe(1);
+});
+
+test("AWS room creation requires an unexpired authenticated identity", async () => {
+  delete rows["AUTH#student"];
+  await handle({ type: "create-room" });
+  expect(delivered.at(-1).type).toBe("authentication-error");
+  expect(writes).toHaveLength(0);
+  rows["AUTH#student"] = { userId: "student", expiresAt: 1 };
+  await handle({ type: "create-room" });
+  expect(delivered.at(-1).type).toBe("authentication-error");
+  expect(writes).toHaveLength(0);
+});
+
+test("AWS creation records the verified owner, ignoring browser-supplied email", async () => {
+  await handle({ type: "create-room", email: "attacker@example.test", ownerUserId: "attacker" }, "teacher");
+  const items = writes[0].TransactItems;
+  expect(items).toHaveLength(4);
+  expect(items[0].Put.Item.ownerUserId).toBe("teacher");
+  expect(items[2].Put.TableName).toBe("test-lessons");
+  expect(items[3].Put.Item.verifiedEmail).toBe("teacher@example.test");
+  expect(items[3].Put.Item.userId).toBe("teacher");
+});
+
+test("AWS admission records the participant atomically and rejects the owner's student account", async () => {
+  rows["ROOM#room"] = { roomId: "room", ownerUserId: "teacher", teacherConnectionId: "teacher",
+    expiresAt: Date.now() / 1000 + 300, locked: false, joinExpiresAt: Date.now() + 60000 };
+  await handle({ type: "join-room", roomId: "room" }, "teacher");
+  expect(delivered.at(-1).message).toContain("different verified account");
+  expect(writes).toHaveLength(0);
+  await handle({ type: "join-room", roomId: "room" });
+  expect(writes[0].TransactItems[2].Put).toMatchObject({ TableName: "test-lessons",
+    Item: { userId: "student", role: "student", verifiedEmail: "student@example.test" } });
+});
+
+test("AWS teacher rights require account ownership as well as socket membership", async () => {
+  seed();
+  rows["CONNECTION#teacher"] = { ...rows["CONNECTION#student"], role: "teacher", userId: "teacher" };
+  rows["AUTH#teacher"].userId = "different-account";
+  await handle({ type: "end-room", roomId: "room" }, "teacher");
+  expect(delivered.at(-1).type).toBe("room-error");
+  expect(writes).toHaveLength(0);
+});
+
+test("AWS fails closed when identity service configuration is absent", async () => {
+  await handle({ type: "authenticate", token: "not-a-token" });
+  expect(delivered.at(-1).type).toBe("authentication-error");
+  expect(writes).toHaveLength(0);
 });

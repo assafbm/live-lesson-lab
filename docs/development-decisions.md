@@ -183,6 +183,12 @@ document-source replacement, then design recording with consent/access/retention
 
 ## References
 
+The subsequent [verified identity decision](decisions/0009-verified-identity-and-private-recordings.md)
+implements open verified-email registration and durable lesson ownership on a
+feature branch, and defines the requested student-view recording composition.
+It supersedes the earlier account deferral; recording storage/playback and email
+delivery remain future work. Nothing in that branch has been deployed yet.
+
 - Existing ADRs: [0001](decisions/0001-monorepo-and-signaling.md), [decision directory](decisions/).
 - [W3C WebRTC statistics](https://www.w3.org/TR/webrtc-stats/): interval counters and concealment semantics.
 - [AWS WebSocket quotas](https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-execution-service-websocket-limits-table.html): frame and connection limits.

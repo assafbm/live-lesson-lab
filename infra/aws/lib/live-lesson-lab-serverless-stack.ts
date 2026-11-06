@@ -5,6 +5,7 @@ import * as integrations from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
 import * as origins from "aws-cdk-lib/aws-cloudfront-origins";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as cognito from "aws-cdk-lib/aws-cognito";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as nodejs from "aws-cdk-lib/aws-lambda-nodejs";
@@ -20,6 +21,55 @@ import { Construct } from "constructs";
 export class LiveLessonLabServerlessStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
+
+    // An explicit existing origin avoids a dependency cycle between Cognito's
+    // callback allowlist and CloudFront's security headers. No wildcard redirects.
+    const callbackOrigin = this.node.tryGetContext("authCallbackOrigin") as string;
+    if (!callbackOrigin || new URL(callbackOrigin).origin !== callbackOrigin || !callbackOrigin.startsWith("https://")) {
+      throw new Error("Set authCallbackOrigin to the exact HTTPS website origin.");
+    }
+    const accounts = new cognito.UserPool(this, "LessonAccounts", {
+      userPoolName: "live-lesson-lab-pilot-accounts",
+      selfSignUpEnabled: true,
+      signInAliases: { email: true },
+      autoVerify: { email: true },
+      standardAttributes: { email: { required: true, mutable: false } },
+      accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
+      featurePlan: cognito.FeaturePlan.LITE,
+      passwordPolicy: { minLength: 12, requireLowercase: true, requireUppercase: true, requireDigits: true, requireSymbols: true },
+      deletionProtection: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN
+    });
+    const accountClient = accounts.addClient("WebBrowser", {
+      userPoolClientName: "live-lesson-lab-web",
+      generateSecret: false,
+      preventUserExistenceErrors: true,
+      enableTokenRevocation: true,
+      idTokenValidity: cdk.Duration.hours(1),
+      accessTokenValidity: cdk.Duration.hours(1),
+      refreshTokenValidity: cdk.Duration.days(1),
+      oAuth: {
+        flows: { authorizationCodeGrant: true },
+        scopes: [cognito.OAuthScope.OPENID, cognito.OAuthScope.EMAIL],
+        callbackUrls: [`${callbackOrigin}/`], logoutUrls: [`${callbackOrigin}/`]
+      }
+    });
+    const accountDomain = accounts.addDomain("SignIn", {
+      cognitoDomain: { domainPrefix: `live-lesson-lab-${this.account}-${this.region}` },
+      managedLoginVersion: cognito.ManagedLoginVersion.CLASSIC_HOSTED_UI
+    });
+    const authDomain = accountDomain.baseUrl();
+    const authAuthority = `https://cognito-idp.${this.region}.${this.urlSuffix}/${accounts.userPoolId}`;
+    // Durable identity/attendance records are deliberately separate from expiring
+    // socket routing. This table contains no passwords, tokens or recording bytes.
+    const lessonRecords = new dynamodb.Table(this, "LessonRecords", {
+      partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true }
+    });
 
     // The table stores routing state only: one short-lived room row and one
     // membership row per connected browser. It never stores camera or audio data.
@@ -45,7 +95,8 @@ export class LiveLessonLabServerlessStack extends cdk.Stack {
       runtime: lambda.Runtime.NODEJS_22_X,
       memorySize: 256,
       timeout: cdk.Duration.seconds(10),
-      environment: { ROOMS_TABLE: roomTable.tableName },
+      environment: { ROOMS_TABLE: roomTable.tableName, LESSONS_TABLE: lessonRecords.tableName,
+        AUTH_USER_POOL_ID: accounts.userPoolId, AUTH_CLIENT_ID: accountClient.userPoolClientId },
       bundling: {
         minify: true,
         sourceMap: true,
@@ -53,6 +104,7 @@ export class LiveLessonLabServerlessStack extends cdk.Stack {
       }
     });
     roomTable.grantReadWriteData(signalingHandler);
+    lessonRecords.grantReadWriteData(signalingHandler);
 
     const socketApi = new apigateway.WebSocketApi(this, "SignalingApi", {
       description: "Private lesson signaling; WebRTC media stays in the browsers",
@@ -101,7 +153,7 @@ export class LiveLessonLabServerlessStack extends cdk.Stack {
             referrerPolicy: { referrerPolicy: cloudfront.HeadersReferrerPolicy.NO_REFERRER, override: true },
             strictTransportSecurity: { accessControlMaxAge: cdk.Duration.days(365), override: true },
             contentSecurityPolicy: {
-              contentSecurityPolicy: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self' wss://${socketApi.apiId}.execute-api.${this.region}.${this.urlSuffix}; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'`,
+              contentSecurityPolicy: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self' wss://${socketApi.apiId}.execute-api.${this.region}.${this.urlSuffix} https://cognito-idp.${this.region}.${this.urlSuffix} ${authDomain}; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'`,
               override: true
             }
           }
@@ -163,6 +215,10 @@ export class LiveLessonLabServerlessStack extends cdk.Stack {
 
     cdk.Tags.of(this).add("Project", "LiveLessonLab");
     cdk.Tags.of(this).add("Environment", "pilot");
+    new cdk.CfnOutput(this, "AuthAuthority", { value: authAuthority, description: "VITE_AUTH_AUTHORITY" });
+    new cdk.CfnOutput(this, "AuthClientId", { value: accountClient.userPoolClientId, description: "VITE_AUTH_CLIENT_ID (public identifier)" });
+    new cdk.CfnOutput(this, "AuthDomain", { value: authDomain, description: "VITE_AUTH_DOMAIN" });
+    new cdk.CfnOutput(this, "LessonRecordsTableName", { value: lessonRecords.tableName });
 
     new cdk.CfnOutput(this, "WebsiteUrl", {
       value: `https://${distribution.distributionDomainName}`,

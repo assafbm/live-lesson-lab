@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./identity": {
+      "types": "./dist/identity.d.ts",
+      "import": "./dist/identity.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
@@ -12,5 +16,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "aws-jwt-verify": "^5.2.1"
   }
 }

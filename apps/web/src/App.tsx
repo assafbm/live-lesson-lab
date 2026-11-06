@@ -8,6 +8,7 @@ import { useCameraPreviews } from "./media/useCameraPreviews";
 import { useAudioInputDevices } from "./media/useAudioInputDevices";
 import { useScreenShare } from "./media/useScreenShare";
 import { RoomAccessControls } from "./components/RoomAccessControls";
+import { AccountControls } from "./auth/AuthGate";
 
 type CameraDevice = {
   deviceId: string;
@@ -302,6 +303,7 @@ function TeacherSetup() {
         <p className="intro">
           Choose a camera for each view. You can use one camera for both, or leave either view off.
         </p>
+        <AccountControls />
 
         <section className="lesson-controls" aria-labelledby="lesson-controls-title">
           <div className="lesson-controls-heading">

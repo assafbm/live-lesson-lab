@@ -286,3 +286,13 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .diagnostic-card dd { text-align: right; margin: 0; font-variant-numeric: tabular-nums; }
 @media (max-width: 400px) { .meeting-role-caption, .meeting-room-code { display: none; } .meeting-toolbar { display: flex; justify-content: center; } }
 @media (max-height: 500px) and (max-width: 700px) { .meeting-layout { grid-template-columns: minmax(0, 1fr) 140px; grid-template-rows: minmax(0, 1fr); } .meeting-side-rail { grid-template-columns: 1fr; grid-template-rows: repeat(2, minmax(0, 1fr)); } }
+.account-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding-block: 0.75rem;
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}

@@ -1,4 +1,5 @@
 import { MicrophoneSettings } from "./MicrophoneSettings";
+import { AccountControls } from "../auth/AuthGate";
 import { useEffect, useState } from "react";
 import type { MediaRole } from "@live-lesson-lab/shared";
 import { CameraPreview } from "./CameraPreview";
@@ -242,6 +243,7 @@ export function StudentLesson({ roomId }: StudentLessonProps) {
         <div className="eyebrow"><span /> STUDENT LOBBY</div>
         <h1 id="student-title">Join your<br /><em>lesson.</em></h1>
         <p className="intro">Check your camera, then connect to your teacher.</p>
+        <AccountControls />
 
         <section className="lesson-card student-lobby-card" aria-live="polite">
           <span className="camera-role-label">ROOM {roomId.slice(0, 8).toUpperCase()}</span>
