@@ -9,6 +9,10 @@ A web app for private lessons, with video views for the `face` and `document` ro
 
 ## Run locally
 
+On `codex/room-access`, teachers also have server-enforced invitation expiry,
+lock/unlock, renewal and End lesson controls. This branch includes screen sharing
+and uses protocol v6; it is not deployed. See [room-access decisions](docs/decisions/0008-room-access-controls.md).
+
 On `codex/screen-sharing`, teacher Settings includes Share screen. This feature
 branch is not deployed to the AWS pilot. See [screen-sharing notes](docs/screen-sharing.md)
 for behavior, test limits and the saved baseline.

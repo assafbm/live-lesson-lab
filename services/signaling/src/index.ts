@@ -5,10 +5,12 @@ import { createServer } from "node:http";
 import { extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
-import { MAX_SIGNALING_BYTES, PROTOCOL_VERSION, parseClientMessage } from "@live-lesson-lab/shared";
+import { isInvitationOpen, INVITATION_LIFETIME_MS, MAX_SIGNALING_BYTES, PROTOCOL_VERSION, parseClientMessage } from "@live-lesson-lab/shared";
 import type { ClientMessage, ServerMessage } from "@live-lesson-lab/shared";
 
 type Room = {
+  locked: boolean;
+  joinExpiresAt: number;
   teacher: WebSocket;
   // A participant can own a room slot without currently being inside the call.
   teacherEntered: boolean;
@@ -102,7 +104,7 @@ function sendError(socket: WebSocket, message: string) {
   send(socket, { type: "room-error", message });
 }
 
-function leaveRoom(socket: WebSocket) {
+function leaveRoom(socket: WebSocket, reason = "The teacher connection closed. Ask for a new lesson link.") {
   const membership = memberships.get(socket);
   if (!membership) return;
 
@@ -114,7 +116,7 @@ function leaveRoom(socket: WebSocket) {
     rooms.delete(membership.roomId);
     if (room.student) {
       memberships.delete(room.student);
-      send(room.student, { type: "room-closed", roomId: membership.roomId, reason: "The teacher connection closed. Ask for a new lesson link." });
+      send(room.student, { type: "room-closed", roomId: membership.roomId, reason });
     }
     return;
   }
@@ -183,9 +185,12 @@ function handleMessage(socket: WebSocket, message: ClientMessage) {
     }
 
     const roomId = randomUUID();
-    rooms.set(roomId, { teacher: socket, teacherEntered: false, student: null, studentEntered: false });
+    const room: Room = { teacher: socket, teacherEntered: false, student: null, studentEntered: false,
+      locked: false, joinExpiresAt: Date.now() + INVITATION_LIFETIME_MS };
+    rooms.set(roomId, room);
     memberships.set(socket, { roomId, role: "teacher" });
     send(socket, { type: "room-created", roomId });
+    send(socket, { type: "room-access", roomId, locked: room.locked, joinExpiresAt: room.joinExpiresAt });
     return;
   }
 
@@ -204,12 +209,37 @@ function handleMessage(socket: WebSocket, message: ClientMessage) {
       sendError(socket, "This lesson already has a student connected.");
       return;
     }
+    if (!isInvitationOpen(room)) {
+      sendError(socket, "This invitation is locked or expired. Ask the teacher to reopen access.");
+      return;
+    }
 
     room.student = socket;
     room.studentEntered = true;
     memberships.set(socket, { roomId: message.roomId, role: "student" });
     send(socket, { type: "room-joined", roomId: message.roomId });
     if (room.teacherEntered) send(room.teacher, { type: "peer-joined", roomId: message.roomId });
+    return;
+  }
+
+  if (message.type === "set-room-locked" || message.type === "renew-invitation" || message.type === "end-room") {
+    const membership = memberships.get(socket);
+    const room = rooms.get(message.roomId);
+    if (!membership || membership.role !== "teacher" || membership.roomId !== message.roomId || room?.teacher !== socket) {
+      sendError(socket, "Only the room's teacher can change access or end the lesson.");
+      return;
+    }
+    if (message.type === "end-room") {
+      const reason = "The teacher ended this lesson.";
+      leaveRoom(socket, reason);
+      send(socket, { type: "room-closed", roomId: message.roomId, reason });
+      return;
+    }
+    if (message.type === "set-room-locked") room.locked = message.locked;
+    // Renewal extends this same bearer link; it is deliberately not described
+    // as token rotation or revocation. Locking does not expel an admitted peer.
+    if (message.type === "renew-invitation") room.joinExpiresAt = Date.now() + INVITATION_LIFETIME_MS;
+    send(socket, { type: "room-access", roomId: message.roomId, locked: room.locked, joinExpiresAt: room.joinExpiresAt });
     return;
   }
 

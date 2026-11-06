@@ -32,6 +32,10 @@ function parseServerMessage(payload: string): ServerMessage | null {
     const candidate = message as Record<string, unknown>;
 
     switch (candidate.type) {
+      case "room-access":
+        return typeof candidate.roomId === "string" && typeof candidate.locked === "boolean"
+          && typeof candidate.joinExpiresAt === "number" && Number.isFinite(candidate.joinExpiresAt)
+          ? { type: "room-access", roomId: candidate.roomId, locked: candidate.locked, joinExpiresAt: candidate.joinExpiresAt } : null;
       case "server-ready":
         return typeof candidate.protocolVersion === "number"
           ? { type: "server-ready", protocolVersion: candidate.protocolVersion as typeof PROTOCOL_VERSION }
@@ -126,6 +130,8 @@ export function useLessonSession(
   const [status, setStatus] = useState<LessonStatus>("connecting");
   const [statusMessage, setStatusMessage] = useState("Connecting to the lesson service…");
   const [roomId, setRoomId] = useState<string | null>(null);
+  const [roomAccess, setRoomAccess] = useState<{ locked: boolean; joinExpiresAt: number } | null>(null);
+  const membershipConfirmedRef = useRef(false);
   const [audioEnabled, setAudioEnabledState] = useState(false);
   const [remoteAudioEnabled, setRemoteAudioEnabled] = useState(false);
   const [audioError, setAudioError] = useState("");
@@ -827,6 +833,7 @@ export function useLessonSession(
         return;
       }
       if (message.type === "room-created") {
+        membershipConfirmedRef.current = true;
         roomIdRef.current = message.roomId;
         setRoomId(message.roomId);
         setStatus("waiting");
@@ -834,6 +841,7 @@ export function useLessonSession(
         return;
       }
       if (message.type === "room-joined") {
+        membershipConfirmedRef.current = true;
         roomIdRef.current = message.roomId;
         setRoomId(message.roomId);
         setStatus("waiting");
@@ -864,6 +872,8 @@ export function useLessonSession(
         return;
       }
       if (message.type === "room-closed") {
+        membershipConfirmedRef.current = false;
+        setRoomAccess(null);
         closePeerConnection();
         roomIdRef.current = null;
         setRoomId(null);
@@ -872,8 +882,19 @@ export function useLessonSession(
         return;
       }
       if (message.type === "room-error") {
+        // A denied invitation is not membership. Allow the student to retry
+        // join-room after access reopens, rather than sending enter-room.
+        if (!membershipConfirmedRef.current) {
+          closePeerConnection();
+          roomIdRef.current = null;
+          setRoomId(null);
+        }
         setStatus("failed");
         setStatusMessage(message.message);
+        return;
+      }
+      if (message.type === "room-access") {
+        if (message.roomId === roomIdRef.current && role === "teacher") setRoomAccess({ locked: message.locked, joinExpiresAt: message.joinExpiresAt });
         return;
       }
       if (message.type === "audio-state") {
@@ -935,6 +956,8 @@ export function useLessonSession(
   }, [closePeerConnection, createPeerConnection, handleAnswer, handleCandidate, handleOffer, role, startTeacherOffer]);
 
   const createRoom = useCallback(() => {
+    membershipConfirmedRef.current = false;
+    setRoomAccess(null);
     send({ type: "create-room" });
     setStatus("joining");
     setStatusMessage("Creating your lesson room…");
@@ -969,6 +992,8 @@ export function useLessonSession(
   }, [applyLocalAudio, stopLocalAudio]);
 
   const leaveRoom = useCallback(() => {
+    membershipConfirmedRef.current = false;
+    setRoomAccess(null);
     send({ type: "leave-room" });
     audioEnabledRef.current = false;
     setAudioEnabledState(false);
@@ -994,6 +1019,10 @@ export function useLessonSession(
   }, [closePeerConnection, send]);
 
   return {
+    roomAccess,
+    setRoomLocked: (locked: boolean) => { if (roomIdRef.current) send({ type: "set-room-locked", roomId: roomIdRef.current, locked }); },
+    renewInvitation: () => { if (roomIdRef.current) send({ type: "renew-invitation", roomId: roomIdRef.current }); },
+    endRoom: () => { if (roomIdRef.current) send({ type: "end-room", roomId: roomIdRef.current }); },
     qualitySamples,
     signalingReady,
     status,

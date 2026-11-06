@@ -1,6 +1,14 @@
 // Keep protocol versioning in one package so client and server can reject
 // accidental mismatches before they start exchanging room messages.
-export const PROTOCOL_VERSION = 5 as const;
+export const PROTOCOL_VERSION = 6 as const;
+export const INVITATION_LIFETIME_MS = 30 * 60 * 1000;
+
+// Fixed invitation expiry is distinct from routing TTL. Missing fields from
+// an older room fail closed; only the server's clock decides admission.
+export function isInvitationOpen(access: { locked?: boolean; joinExpiresAt?: number }, now = Date.now()): boolean {
+  return access.locked === false && typeof access.joinExpiresAt === "number"
+    && Number.isFinite(access.joinExpiresAt) && access.joinExpiresAt > now;
+}
 
 // Logical media roles never expose physical device IDs to the remote peer.
 export type MediaRole = "face" | "document";
@@ -26,6 +34,9 @@ export type ClientMessage =
   | { type: "enter-room"; roomId: string }
   | { type: "exit-room"; roomId: string }
   | { type: "leave-room" }
+  | { type: "set-room-locked"; roomId: string; locked: boolean }
+  | { type: "renew-invitation"; roomId: string }
+  | { type: "end-room"; roomId: string }
   | { type: "offer"; roomId: string; sdp: string }
   | { type: "answer"; roomId: string; sdp: string }
   | { type: "ice-candidate"; roomId: string; candidate: IceCandidatePayload }
@@ -35,6 +46,7 @@ export type ClientMessage =
 export type ServerMessage =
   | { type: "server-ready"; protocolVersion: typeof PROTOCOL_VERSION }
   | { type: "room-created"; roomId: string }
+  | { type: "room-access"; roomId: string; locked: boolean; joinExpiresAt: number }
   | { type: "room-joined"; roomId: string }
   | { type: "room-entered"; roomId: string }
   | { type: "room-exited"; roomId: string }
@@ -93,9 +105,14 @@ export function parseClientMessage(payload: string): ClientMessage | null {
     case "enter-room":
     case "exit-room":
     case "join-room":
+    case "renew-invitation":
+    case "end-room":
       return isRoomId(value.roomId)
         ? { type: value.type, roomId: value.roomId }
         : null;
+    case "set-room-locked":
+      return isRoomId(value.roomId) && typeof value.locked === "boolean"
+        ? { type: value.type, roomId: value.roomId, locked: value.locked } : null;
     case "offer":
     case "answer":
       return isRoomId(value.roomId) && typeof value.sdp === "string" && value.sdp.length > 0

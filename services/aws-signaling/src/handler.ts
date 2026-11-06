@@ -8,7 +8,7 @@ import {
   TransactWriteCommand,
   UpdateCommand
 } from "@aws-sdk/lib-dynamodb";
-import { PROTOCOL_VERSION, parseClientMessage } from "@live-lesson-lab/shared";
+import { isInvitationOpen, INVITATION_LIFETIME_MS, PROTOCOL_VERSION, parseClientMessage } from "@live-lesson-lab/shared";
 import type { ClientMessage, ParticipantRole, ServerMessage } from "@live-lesson-lab/shared";
 
 type WebSocketEvent = {
@@ -30,6 +30,8 @@ type Membership = {
 };
 
 type Room = {
+  locked: boolean;
+  joinExpiresAt: number;
   pk: string;
   sk: "ROOM";
   roomId: string;
@@ -151,6 +153,8 @@ async function createRoom(event: WebSocketEvent) {
     teacherConnectionId: connectionId,
     teacherEntered: false,
     studentEntered: false,
+    locked: false,
+    joinExpiresAt: Date.now() + INVITATION_LIFETIME_MS,
     expiresAt: expiry
   };
   const membership: Membership = {
@@ -167,6 +171,7 @@ async function createRoom(event: WebSocketEvent) {
     ]
   }));
   await sendTo(event, connectionId, { type: "room-created", roomId });
+  await sendTo(event, connectionId, { type: "room-access", roomId, locked: room.locked, joinExpiresAt: room.joinExpiresAt });
 }
 
 async function joinRoom(event: WebSocketEvent, roomId: string) {
@@ -185,6 +190,12 @@ async function joinRoom(event: WebSocketEvent, roomId: string) {
     await sendError(event, "This lesson already has a student connected.");
     return;
   }
+  // Legacy rows without access fields fail closed. Invitation expiry is fixed
+  // and separate from sliding routing TTL; heartbeats never extend invitations.
+  if (!isInvitationOpen(room)) {
+    await sendError(event, "This invitation is locked or expired. Ask the teacher to reopen access.");
+    return;
+  }
 
   const expiry = expiresAt();
   try {
@@ -195,12 +206,15 @@ async function joinRoom(event: WebSocketEvent, roomId: string) {
             TableName: tableName,
             Key: roomKey(roomId),
             UpdateExpression: "SET studentConnectionId = :connectionId, studentEntered = :entered, expiresAt = :expiresAt",
-            ConditionExpression: "attribute_not_exists(studentConnectionId) AND expiresAt > :now",
+            ConditionExpression: "attribute_not_exists(studentConnectionId) AND expiresAt > :now AND #locked = :unlocked AND joinExpiresAt > :nowMs",
+            ExpressionAttributeNames: { "#locked": "locked" },
             ExpressionAttributeValues: {
               ":connectionId": connectionId,
               ":entered": true,
               ":expiresAt": expiry,
-              ":now": Math.floor(Date.now() / 1000)
+              ":now": Math.floor(Date.now() / 1000),
+              ":nowMs": Date.now(),
+              ":unlocked": false
             }
           }
         },
@@ -270,7 +284,7 @@ async function setMeetingPresence(event: WebSocketEvent, membership: Membership,
   }
 }
 
-async function leaveRoom(event: WebSocketEvent, connectionId: string) {
+async function leaveRoom(event: WebSocketEvent, connectionId: string, reason = "The teacher connection closed. Ask for a new lesson link.") {
   const membership = await getMembership(connectionId);
   if (!membership) return;
 
@@ -285,7 +299,7 @@ async function leaveRoom(event: WebSocketEvent, connectionId: string) {
     }
     await documentClient.send(new TransactWriteCommand({ TransactItems: deletes }));
     if (room?.studentConnectionId && room.studentConnectionId !== connectionId) {
-      await sendTo(event, room.studentConnectionId, { type: "room-closed", roomId: membership.roomId, reason: "The teacher connection closed. Ask for a new lesson link." });
+      await sendTo(event, room.studentConnectionId, { type: "room-closed", roomId: membership.roomId, reason });
     }
     return;
   }
@@ -368,6 +382,32 @@ async function handleMessage(event: WebSocketEvent, message: ClientMessage) {
 
   if (message.type === "enter-room" || message.type === "exit-room") {
     await setMeetingPresence(event, membership, room, message.type === "enter-room");
+    return;
+  }
+
+  if (message.type === "set-room-locked" || message.type === "renew-invitation" || message.type === "end-room") {
+    if (membership.role !== "teacher") {
+      await sendError(event, "Only the room's teacher can change access or end the lesson.");
+      return;
+    }
+    if (message.type === "end-room") {
+      const reason = "The teacher ended this lesson.";
+      await leaveRoom(event, connectionId, reason);
+      await sendTo(event, connectionId, { type: "room-closed", roomId: room.roomId, reason });
+      return;
+    }
+    const attribute = message.type === "set-room-locked" ? "locked" : "joinExpiresAt";
+    const value = message.type === "set-room-locked" ? message.locked : Date.now() + INVITATION_LIFETIME_MS;
+    const result = await documentClient.send(new UpdateCommand({
+      TableName: tableName, Key: roomKey(room.roomId),
+      UpdateExpression: "SET #access = :value",
+      ConditionExpression: "teacherConnectionId = :teacher AND expiresAt > :now",
+      ExpressionAttributeNames: { "#access": attribute },
+      ExpressionAttributeValues: { ":value": value, ":teacher": connectionId, ":now": Math.floor(Date.now() / 1000) },
+      ReturnValues: "ALL_NEW"
+    }));
+    const updated = result.Attributes as Room;
+    await sendTo(event, connectionId, { type: "room-access", roomId: room.roomId, locked: updated.locked, joinExpiresAt: updated.joinExpiresAt });
     return;
   }
 

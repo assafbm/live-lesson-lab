@@ -256,3 +256,41 @@ test("a rejected screen sender swap releases the display and restores the camera
     await expect.poll(() => student.locator('section[aria-label="Document"] video').evaluate((video: HTMLVideoElement) => video.videoWidth)).toBeGreaterThan(0);
   } finally { await context.close(); }
 });
+
+test("teacher can lock entry, student can retry after unlock, and ending releases all media", async ({ page: teacher, browser }) => {
+  const context = await browser.newContext({ permissions: ["camera", "microphone"] });
+  const student = await context.newPage();
+  try {
+    await instrument(teacher); await instrument(student);
+    await teacher.goto("/");
+    await teacher.getByRole("button", { name: "Create lesson link", exact: true }).click();
+    await expect(teacher.locator("#student-link")).toBeVisible();
+    const link = await teacher.locator("#student-link").inputValue();
+    await teacher.getByRole("button", { name: "Lock new joins", exact: true }).click();
+    await expect(teacher.getByText("New joins are locked.", { exact: true })).toBeVisible();
+    await teacher.getByRole("button", { name: "Join lesson", exact: true }).click();
+    await student.goto(link);
+    await student.getByRole("button", { name: "Enable my camera", exact: true }).click();
+    await student.getByRole("button", { name: "Join lesson", exact: true }).click();
+    await expect(student.getByText(/This invitation is locked or expired/)).toBeVisible();
+    await expect(student.getByRole("button", { name: "Join lesson", exact: true })).toBeVisible();
+    await teacher.getByRole("button", { name: "Settings", exact: true }).click();
+    await teacher.getByRole("button", { name: "Unlock new joins", exact: true }).click();
+    await expect(teacher.getByText("New joins are open.", { exact: true })).toBeVisible();
+    await student.getByRole("button", { name: "Join lesson", exact: true }).click();
+    await expect(student.getByText("The lesson connection is live.", { exact: true })).toBeVisible();
+    await teacher.getByRole("button", { name: "Share screen", exact: true }).click();
+    await expect(teacher.getByRole("button", { name: "Stop sharing", exact: true })).toBeVisible();
+    await teacher.getByRole("button", { name: "End lesson for everyone", exact: true }).click();
+    await teacher.getByRole("button", { name: "Keep lesson open", exact: true }).click();
+    await expect(teacher.locator(".meeting-screen")).toBeVisible();
+    await teacher.getByRole("button", { name: "End lesson for everyone", exact: true }).click();
+    await teacher.getByRole("button", { name: "End lesson now", exact: true }).click();
+    for (const page of [teacher, student]) {
+      await expect(page.locator(".meeting-screen")).toHaveCount(0);
+      await expect(page.getByText("The teacher ended this lesson.", { exact: true })).toBeVisible();
+      await expect.poll(() => page.evaluate(() => (window as any).__mediaTest.streams.concat((window as any).__mediaTest.displays)
+        .flatMap((stream: MediaStream) => stream.getTracks()).filter((track: MediaStreamTrack) => track.readyState === "live").length)).toBe(0);
+    }
+  } finally { await context.close(); }
+});

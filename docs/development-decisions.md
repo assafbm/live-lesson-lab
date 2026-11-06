@@ -2,6 +2,10 @@
 
 Updated: 2026-11-06. Read with [the review report](review-2026-11-06.md).
 
+Feature-branch update, 2026-11-07: [Decision 0008](decisions/0008-room-access-controls.md)
+records server-enforced invitation expiry, lock/unlock, renewal and terminal
+room closure. It is implemented on `codex/room-access`, not the deployed pilot.
+
 This report consolidates the Hebrew project specification, the owner's later
 requirements, the existing architecture decisions, the learning log, and the
 current implementation. Later explicit product decisions supersede the original

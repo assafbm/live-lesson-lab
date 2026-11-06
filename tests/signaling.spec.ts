@@ -48,3 +48,42 @@ test("signaling enforces room isolation, two participants and role permissions",
     expect((await student.receive("room-closed")).roomId).toBe(roomId);
   } finally { teacher.socket.close(); student.socket.close(); stranger.socket.close(); }
 });
+
+test("only the teacher can gate new memberships, while admitted participants can return", async () => {
+  const teacher = await client();
+  const student = await client();
+  try {
+    teacher.send({ type: "create-room" });
+    const { roomId } = await teacher.receive("room-created");
+    const original = await teacher.receive("room-access");
+    expect(original.locked).toBe(false);
+    expect(original.joinExpiresAt).toBeGreaterThan(Date.now());
+    student.send({ type: "end-room", roomId });
+    expect((await student.receive("room-error")).message).toContain("Only the room's teacher");
+    teacher.send({ type: "set-room-locked", roomId, locked: true });
+    expect((await teacher.receive("room-access")).locked).toBe(true);
+    student.send({ type: "join-room", roomId });
+    expect((await student.receive("room-error")).message).toContain("locked or expired");
+    teacher.send({ type: "renew-invitation", roomId });
+    const renewed = await teacher.receive("room-access");
+    expect(renewed.locked).toBe(true);
+    expect(renewed.joinExpiresAt).toBeGreaterThanOrEqual(original.joinExpiresAt);
+    teacher.send({ type: "set-room-locked", roomId, locked: false });
+    await teacher.receive("room-access");
+    student.send({ type: "join-room", roomId });
+    await student.receive("room-joined");
+    student.send({ type: "set-room-locked", roomId, locked: false });
+    expect((await student.receive("room-error")).message).toContain("Only the room's teacher");
+    teacher.send({ type: "set-room-locked", roomId, locked: true });
+    await teacher.receive("room-access");
+    student.send({ type: "exit-room", roomId });
+    await student.receive("room-exited");
+    student.send({ type: "enter-room", roomId });
+    await student.receive("room-entered");
+    teacher.send({ type: "end-room", roomId });
+    expect((await student.receive("room-closed")).reason).toContain("ended");
+    expect((await teacher.receive("room-closed")).roomId).toBe(roomId);
+    student.send({ type: "join-room", roomId });
+    expect((await student.receive("room-error")).message).toContain("ended");
+  } finally { teacher.socket.close(); student.socket.close(); }
+});

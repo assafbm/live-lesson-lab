@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { parseClientMessage, MAX_SIGNALING_BYTES } from "../packages/shared/src/index";
+import { isInvitationOpen, parseClientMessage, MAX_SIGNALING_BYTES } from "../packages/shared/src/index";
 import { summarizeMediaQuality } from "../apps/web/src/media/MediaQuality";
 
 test("rejects malformed, oversized, empty-room and invalid ICE payloads", () => {
@@ -29,4 +29,12 @@ test("quality diagnostics use interval deltas and never export addresses", () =>
   expect(result.audio[0]).toMatchObject({ packetsPerSecond: 50, concealedPercent: 5, jitterMs: 2 });
   expect(JSON.stringify(result)).not.toContain("private");
   expect(summarizeMediaQuality(report(7000, 1, 1, 0), previous).audio[0].packetsPerSecond).toBeNull();
+});
+
+test("invitation admission fails closed at expiry and validates control payloads", async () => {
+  expect(isInvitationOpen({ locked: false, joinExpiresAt: 100 }, 99)).toBe(true);
+  expect(isInvitationOpen({ locked: false, joinExpiresAt: 100 }, 100)).toBe(false);
+  expect(isInvitationOpen({ locked: true, joinExpiresAt: 100 }, 99)).toBe(false);
+  expect(isInvitationOpen({}, 99)).toBe(false);
+  expect(parseClientMessage(JSON.stringify({ type: "set-room-locked", roomId: "room", locked: "false" }))).toBeNull();
 });

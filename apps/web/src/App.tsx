@@ -7,6 +7,7 @@ import { defaultAudioProcessingSettings, useLessonSession, type AudioProcessingS
 import { useCameraPreviews } from "./media/useCameraPreviews";
 import { useAudioInputDevices } from "./media/useAudioInputDevices";
 import { useScreenShare } from "./media/useScreenShare";
+import { RoomAccessControls } from "./components/RoomAccessControls";
 
 type CameraDevice = {
   deviceId: string;
@@ -98,6 +99,13 @@ function TeacherSetup() {
     screenShare.stream ? { stream: screenShare.stream, onFailure: screenShare.fail } : null);
   const [copiedLink, setCopiedLink] = useState(false);
   const [inMeeting, setInMeeting] = useState(false);
+  useEffect(() => {
+    if (lesson.status !== "closed") return;
+    screenShare.stop();
+    setSelectedDevices({ face: null, document: null });
+    setInMeeting(false);
+  }, [lesson.status, screenShare.stop]);
+  const accessControls = <RoomAccessControls access={lesson.roomAccess} onLock={lesson.setRoomLocked} onRenew={lesson.renewInvitation} onEnd={lesson.endRoom} />;
 
   const joinUrl = lesson.roomId
     ? `${location.origin}${location.pathname}?role=student&room=${encodeURIComponent(lesson.roomId)}`
@@ -197,6 +205,7 @@ function TeacherSetup() {
   const rolesShareCamera = !screenShare.stream && Boolean(selectedDevices.face && selectedDevices.face === selectedDevices.document);
   const meetingCameraSettings = (
     <div className="meeting-view-settings">
+      {accessControls}
       <MicrophoneSettings inputs={audioInputs} enabled={lesson.audioEnabled} processing={audioProcessing} onChange={setAudioProcessing} />
       <fieldset>
         <legend>Share a screen</legend>
@@ -327,6 +336,7 @@ function TeacherSetup() {
                 </button>
               </div>
               <button className="primary-button lesson-action" type="button" onClick={() => { setInMeeting(true); lesson.enterRoom(); }}>Join lesson</button>
+              {accessControls}
             </>
           )}
           <p className="lesson-note">Selected cameras are shared with your student while they are connected.</p>

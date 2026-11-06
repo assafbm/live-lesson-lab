@@ -48,6 +48,14 @@ export function StudentLesson({ roomId }: StudentLessonProps) {
   const studentPreview = useCameraPreviews({ face: studentCameraId, document: null });
   const audioInputs = useAudioInputDevices();
   const lesson = useLessonSession("student", undefined, studentCameraId, outgoingTransforms, audioInputs.selectedDeviceId, audioProcessing);
+  useEffect(() => {
+    if (lesson.status === "closed") {
+      setInMeeting(false);
+      setStudentCameraId(null);
+    } else if (lesson.status === "failed" && !lesson.roomId) {
+      setInMeeting(false);
+    }
+  }, [lesson.status, lesson.roomId]);
 
   async function refreshCameraDevices() {
     try {
@@ -264,7 +272,7 @@ export function StudentLesson({ roomId }: StudentLessonProps) {
             {lesson.videoError && <p className="error-copy" role="alert">{lesson.videoError}</p>}
           </section>
 
-          {(lesson.status === "ready" || lesson.roomId) && (
+          {(lesson.status === "ready" || lesson.status === "failed" || lesson.roomId) && lesson.status !== "closed" && (
             <button className="primary-button lesson-action" type="button" onClick={enterLesson} disabled={!lesson.signalingReady}>Join lesson</button>
           )}
           {(lesson.status === "failed" || lesson.status === "closed") && <a className="text-button leave-button" href="/">Back to Live Lesson Lab</a>}
