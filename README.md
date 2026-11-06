@@ -9,6 +9,10 @@ A web app for private lessons, with video views for the `face` and `document` ro
 
 ## Run locally
 
+On `codex/screen-sharing`, teacher Settings includes Share screen. This feature
+branch is not deployed to the AWS pilot. See [screen-sharing notes](docs/screen-sharing.md)
+for behavior, test limits and the saved baseline.
+
 ```sh
 npm install
 npm run dev

@@ -3,6 +3,11 @@
 - Date: 2026-11-06
 - Status: Sequencing decision; neither feature is implemented in this release.
 
+Follow-up: the owner authorized isolated feature work while postponing audio
+acceptance. Screen sharing is now implemented on `codex/screen-sharing`, without
+merging or deploying it. See [branch notes](../screen-sharing.md). The production
+stabilization release and recording deferral remain unchanged.
+
 ## Decision
 
 Release the reviewed audio/video/security fixes first and validate natural voice

@@ -3,13 +3,33 @@ import { test, expect, type Page } from "@playwright/test";
 // Instrument only the test browser. Production never exposes peers or tracks.
 async function instrument(page: Page) {
   await page.addInitScript(() => {
-    const state = { peers: [] as RTCPeerConnection[], streams: [] as MediaStream[], failAudioOnce: false, delayAudio: false, blockPlayback: false };
+    const state = { peers: [] as RTCPeerConnection[], streams: [] as MediaStream[], failAudioOnce: false, delayAudio: false, blockPlayback: false,
+      displayMode: "normal", displays: [] as MediaStream[], displayOptions: null as unknown };
     (window as any).__mediaTest = state;
     const Peer = window.RTCPeerConnection;
     window.RTCPeerConnection = class extends Peer {
       constructor(config?: RTCConfiguration) { super({ ...config, iceServers: [] }); state.peers.push(this); }
     };
     const capture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    // Mock only the native screen picker, not the WebRTC sender/receiver path.
+    // Never expose a real desktop or personal window to an automated test.
+    navigator.mediaDevices.getDisplayMedia = async (options) => {
+      state.displayOptions = options;
+      if (state.displayMode === "cancel") throw new DOMException("Test picker cancellation", "NotAllowedError");
+      if (state.displayMode === "delay") await new Promise((resolve) => setTimeout(resolve, 1200));
+      const canvas = document.createElement("canvas");
+      canvas.width = 800; canvas.height = 450;
+      const context = canvas.getContext("2d")!;
+      const paint = () => { context.fillStyle = "#1c3452"; context.fillRect(0, 0, 800, 450); context.fillStyle = "white"; context.font = "36px sans-serif"; context.fillText(`Shared document ${Date.now()}`, 30, 70); };
+      paint();
+      const stream = canvas.captureStream(15);
+      const timer = setInterval(paint, 70);
+      const track = stream.getVideoTracks()[0];
+      const stop = track.stop.bind(track);
+      track.stop = () => { clearInterval(timer); stop(); };
+      state.displays.push(stream);
+      return stream;
+    };
     const play = HTMLMediaElement.prototype.play;
     HTMLMediaElement.prototype.play = function () {
       if (this.tagName === "AUDIO" && state.blockPlayback) return Promise.reject(new DOMException("Test autoplay block", "NotAllowedError"));
@@ -152,5 +172,87 @@ test("camera-free joining, late microphone cancellation, and responsive room", a
     await teacher.getByRole("button", { name: "Disconnect", exact: true }).click();
     await expect.poll(() => teacher.evaluate(() => (window as any).__mediaTest.streams.length)).toBeGreaterThan(0);
     await expect.poll(() => teacher.evaluate(() => (window as any).__mediaTest.streams.flatMap((stream: MediaStream) => stream.getTracks()).filter((track: MediaStreamTrack) => track.readyState === "live").length)).toBe(0);
+  } finally { await context.close(); }
+});
+
+test("screen sharing replaces only the document source and restores the shared camera", async ({ page: teacher, browser }, info) => {
+  const context = await browser.newContext({ permissions: ["camera", "microphone"] });
+  const student = await context.newPage();
+  try {
+    await joinPair(teacher, student);
+    await teacher.getByRole("button", { name: "Unmute", exact: true }).click();
+    await expect.poll(() => inboundPackets(student)).toBeGreaterThan(20);
+    const microphone = await teacher.evaluate(() => (window as any).__mediaTest.peers.at(-1).getSenders().find((sender: RTCRtpSender) => sender.track?.kind === "audio").track.id);
+    await teacher.getByRole("button", { name: "Settings", exact: true }).click();
+    await teacher.getByRole("button", { name: "Share screen", exact: true }).click();
+    await expect(teacher.getByRole("button", { name: "Stop sharing", exact: true })).toBeVisible();
+    await expect.poll(() => teacher.evaluate(() => (window as any).__mediaTest.peers.at(-1).getSenders().filter((sender: RTCRtpSender) => sender.track?.kind === "video").length)).toBe(2);
+    await expect.poll(() => student.locator('section[aria-label="Document"] video').evaluate((video: HTMLVideoElement) => video.videoWidth)).toBe(800);
+    expect(await teacher.evaluate(() => (window as any).__mediaTest.displayOptions.audio)).toBe(false);
+    expect(await teacher.evaluate(() => (window as any).__mediaTest.peers.at(-1).getSenders().find((sender: RTCRtpSender) => sender.track?.kind === "audio").track.id)).toBe(microphone);
+    expect(await teacher.evaluate(() => (window as any).__mediaTest.peers.at(-1).getTransceivers().length)).toBe(4);
+    await teacher.keyboard.press("Escape");
+    await teacher.setViewportSize({ width: 390, height: 844 });
+    await expect(teacher.getByRole("button", { name: "Stop sharing", exact: true })).toBeInViewport();
+    expect(await teacher.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.documentElement.scrollHeight <= innerHeight)).toBe(true);
+    await teacher.screenshot({ path: info.outputPath("screen-sharing-phone.png") });
+
+    // The browser's own Stop sharing action emits ended. Programmatic stop()
+    // does not, so explicitly dispatch that event when simulating the browser.
+    await teacher.evaluate(() => {
+      const track = (window as any).__mediaTest.displays.at(-1).getVideoTracks()[0];
+      track.stop(); track.dispatchEvent(new Event("ended"));
+    });
+    await expect(teacher.getByRole("button", { name: "Stop sharing", exact: true })).toBeHidden();
+    await expect.poll(() => teacher.evaluate(() => (window as any).__mediaTest.peers.at(-1).getSenders().filter((sender: RTCRtpSender) => sender.track?.kind === "video").length)).toBe(1);
+    await expect.poll(() => student.locator('section[aria-label="Document"] video').evaluate((video: HTMLVideoElement) => video.videoWidth)).toBeGreaterThan(800);
+    const packets = await inboundPackets(student);
+    await expect.poll(() => inboundPackets(student)).toBeGreaterThan(packets + 20);
+  } finally { await context.close(); }
+});
+
+test("screen picker cancellation and late resolution do not leak a display capture", async ({ page: teacher, browser }) => {
+  const context = await browser.newContext({ permissions: ["camera", "microphone"] });
+  const student = await context.newPage();
+  try {
+    await joinPair(teacher, student, false);
+    await teacher.getByRole("button", { name: "Settings", exact: true }).click();
+    await teacher.evaluate(() => { (window as any).__mediaTest.displayMode = "cancel"; });
+    await teacher.getByRole("button", { name: "Share screen", exact: true }).click();
+    await expect(teacher.getByText(/Screen sharing was cancelled or denied/)).toBeVisible();
+    await expect(teacher.getByRole("button", { name: "Stop sharing", exact: true })).toBeHidden();
+    await teacher.evaluate(() => { (window as any).__mediaTest.displayMode = "delay"; });
+    await teacher.getByRole("button", { name: "Share screen", exact: true }).click();
+    await teacher.keyboard.press("Escape");
+    await teacher.getByRole("button", { name: "Disconnect", exact: true }).click();
+    await expect.poll(() => teacher.evaluate(() => (window as any).__mediaTest.displays.length)).toBe(1);
+    await expect.poll(() => teacher.evaluate(() => (window as any).__mediaTest.displays[0].getVideoTracks()[0].readyState)).toBe("ended");
+  } finally { await context.close(); }
+});
+
+test("a rejected screen sender swap releases the display and restores the camera", async ({ page: teacher, browser }) => {
+  const context = await browser.newContext({ permissions: ["camera", "microphone"] });
+  const student = await context.newPage();
+  try {
+    await joinPair(teacher, student);
+    await teacher.evaluate(() => {
+      const state = (window as any).__mediaTest;
+      for (const sender of state.peers.at(-1).getSenders() as RTCRtpSender[]) {
+        const replace = sender.replaceTrack.bind(sender);
+        sender.replaceTrack = async (track) => {
+          if (track && state.displays.some((stream: MediaStream) => stream.getVideoTracks().includes(track))) {
+            throw new DOMException("Test unsupported format", "InvalidModificationError");
+          }
+          return replace(track);
+        };
+      }
+    });
+    await teacher.getByRole("button", { name: "Settings", exact: true }).click();
+    await teacher.getByRole("button", { name: "Share screen", exact: true }).click();
+    await expect(teacher.getByText(/This screen could not be attached/)).toBeVisible();
+    await expect(teacher.getByRole("button", { name: "Stop sharing", exact: true })).toBeHidden();
+    await expect.poll(() => teacher.evaluate(() => (window as any).__mediaTest.displays[0].getVideoTracks()[0].readyState)).toBe("ended");
+    await expect.poll(() => teacher.evaluate(() => (window as any).__mediaTest.peers.at(-1).getSenders().filter((sender: RTCRtpSender) => sender.track?.kind === "video").length)).toBe(1);
+    await expect.poll(() => student.locator('section[aria-label="Document"] video').evaluate((video: HTMLVideoElement) => video.videoWidth)).toBeGreaterThan(0);
   } finally { await context.close(); }
 });

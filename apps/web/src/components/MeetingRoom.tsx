@@ -19,6 +19,8 @@ type MeetingRoomProps = {
   audioError: string;
   qualitySamples: MediaQualitySample[];
   videoError?: string;
+  sharingScreen?: boolean;
+  onStopScreenShare?: () => void;
   mainRotation?: 0 | 90 | 180 | 270;
   mainMirrored?: boolean;
   mainZoom?: number;
@@ -46,6 +48,8 @@ export function MeetingRoom({
   audioError,
   qualitySamples,
   videoError = "",
+  sharingScreen = false,
+  onStopScreenShare,
   mainRotation = 0,
   mainMirrored = false,
   mainZoom = 1,
@@ -106,6 +110,7 @@ export function MeetingRoom({
           label="Document"
           stream={mainVideo}
           main
+          detail={sharingScreen ? "You are sharing your screen" : undefined}
           rotation={mainRotation}
           mirrored={mainMirrored}
           zoom={mainZoom}
@@ -155,6 +160,7 @@ export function MeetingRoom({
       <footer className="meeting-toolbar">
         <span className="meeting-role-caption">{role === "teacher" ? "Teacher" : "Student"}</span>
         <div className="meeting-actions">
+          {sharingScreen && <button className="meeting-action-button" type="button" onClick={onStopScreenShare}>Stop sharing</button>}
           {viewSettings && <button ref={settingsButton} className="meeting-action-button" type="button" onClick={() => setShowViewSettings((current) => !current)} aria-expanded={showViewSettings} aria-controls="media-settings">Settings</button>}
           <button
             className={`meeting-action-button ${microphoneEnabled ? "" : "meeting-action-muted"}`}

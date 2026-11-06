@@ -7,6 +7,10 @@ import { OutgoingVideoTransform, type VideoTransform } from "./OutgoingVideoTran
 
 export type VideoSelections = Record<MediaRole, string | null>;
 export type OutgoingVideoTransforms = Record<MediaRole, VideoTransform>;
+export type DocumentScreenSource = {
+  stream: MediaStream;
+  onFailure: (message: string) => void;
+};
 export type AudioProcessingSettings = {
   echoCancellation: boolean;
   noiseSuppression: boolean;
@@ -114,7 +118,8 @@ export function useLessonSession(
     document: { rotation: 0, mirrored: false }
   },
   microphoneDeviceId = "",
-  audioProcessing = defaultAudioProcessingSettings
+  audioProcessing = defaultAudioProcessingSettings,
+  documentScreen: DocumentScreenSource | null = null
 ) {
   const [qualitySamples, setQualitySamples] = useState<MediaQualitySample[]>([]);
   const [signalingReady, setSignalingReady] = useState(false);
@@ -140,6 +145,7 @@ export function useLessonSession(
   const outgoingTransformsRef = useRef(outgoingTransforms);
   const outgoingProcessorsRef = useRef(new Map<string, { sourceTrack: MediaStreamTrack; processor: OutgoingVideoTransform }>());
   const videoSelectionsRef = useRef(videoSelections);
+  const documentScreenRef = useRef(documentScreen);
   const videoSyncQueueRef = useRef<Promise<void>>(Promise.resolve());
   const studentVideoDeviceIdRef = useRef(studentVideoDeviceId);
   const studentVideoLeaseRef = useRef<{ deviceId: string; lease: ReturnType<typeof cameraSourceManager.acquire> } | null>(null);
@@ -158,6 +164,7 @@ export function useLessonSession(
   const activeRef = useRef(true);
   const teacherOfferInFlightRef = useRef(false);
   videoSelectionsRef.current = videoSelections;
+  documentScreenRef.current = documentScreen;
   studentVideoDeviceIdRef.current = studentVideoDeviceId;
   outgoingTransformsRef.current = outgoingTransforms;
   microphoneDeviceIdRef.current = microphoneDeviceId;
@@ -386,7 +393,10 @@ export function useLessonSession(
     const task = videoSyncQueueRef.current.then(async () => {
       const currentPeer = peerConnectionRef.current;
       if (!currentPeer || currentPeer !== peerConnection) return;
-      const selections = videoSelectionsRef.current;
+      const screen = documentScreenRef.current;
+      // Enforce screen-versus-document exclusivity here as well as in the UI;
+      // a caller must never accidentally request three teacher video sources.
+      const selections = { ...videoSelectionsRef.current, document: screen ? null : videoSelectionsRef.current.document };
       const uniqueIds = [...new Set([selections.face, selections.document].filter((id): id is string => Boolean(id)))].slice(0, 2);
 
       for (const deviceId of uniqueIds) {
@@ -423,12 +433,20 @@ export function useLessonSession(
 
       if (peerConnectionRef.current !== peerConnection) return;
       const slotIds = uniqueIds.filter((deviceId) => tracks.has(deviceId));
+      // Display capture has its own owner and is never a fake camera device ID.
+      // Camera slots remain deduplicated; a screen uses the next available slot.
+      const outgoingTracks = slotIds.map((deviceId) => tracks.get(deviceId)!);
+      const screenTrack = screen?.stream.getVideoTracks()[0];
+      const screenSlot = screenTrack ? outgoingTracks.length : -1;
+      if (screenTrack) outgoingTracks.push(screenTrack);
       try {
         for (let slot = 0; slot < videoTransceiversRef.current.length; slot += 1) {
-          const deviceId = slotIds[slot];
-          await videoTransceiversRef.current[slot].sender.replaceTrack(deviceId ? tracks.get(deviceId) ?? null : null);
+          await videoTransceiversRef.current[slot].sender.replaceTrack(outgoingTracks[slot] ?? null);
         }
       } catch {
+        if (screen && documentScreenRef.current?.stream === screen.stream) {
+          screen.onFailure("This screen could not be attached to the lesson. Your document camera will be restored.");
+        }
         setVideoError("The camera track could not be attached to the lesson. Try selecting the camera again.");
         return;
       }
@@ -457,7 +475,8 @@ export function useLessonSession(
       const midForDevice = new Map(slotIds.map((deviceId, index) => [deviceId, videoTransceiversRef.current[index]?.mid ?? null]));
       const roles: VideoRoleState = {
         face: selections.face ? midForDevice.get(selections.face) ?? null : null,
-        document: selections.document ? midForDevice.get(selections.document) ?? null : null
+        document: screenSlot >= 0 ? videoTransceiversRef.current[screenSlot]?.mid ?? null
+          : selections.document ? midForDevice.get(selections.document) ?? null : null
       };
       if (roomIdRef.current && peerConnection.localDescription) {
         send({ type: "video-role-state", roomId: roomIdRef.current, roles });
@@ -549,7 +568,7 @@ export function useLessonSession(
 
   useEffect(() => {
     if (role === "teacher" && peerConnectionRef.current) void syncTeacherVideoSources();
-  }, [role, syncTeacherVideoSources, videoSelections.face, videoSelections.document, outgoingTransforms.face.rotation, outgoingTransforms.face.mirrored, outgoingTransforms.document.rotation, outgoingTransforms.document.mirrored]);
+  }, [role, syncTeacherVideoSources, videoSelections.face, videoSelections.document, documentScreen?.stream, outgoingTransforms.face.rotation, outgoingTransforms.face.mirrored, outgoingTransforms.document.rotation, outgoingTransforms.document.mirrored]);
 
   const getMicrophoneStream = useCallback(async () => {
     const generation = audioGenerationRef.current;

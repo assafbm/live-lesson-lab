@@ -6,6 +6,7 @@ import { MeetingRoom } from "./components/MeetingRoom";
 import { defaultAudioProcessingSettings, useLessonSession, type AudioProcessingSettings } from "./media/useLessonSession";
 import { useCameraPreviews } from "./media/useCameraPreviews";
 import { useAudioInputDevices } from "./media/useAudioInputDevices";
+import { useScreenShare } from "./media/useScreenShare";
 
 type CameraDevice = {
   deviceId: string;
@@ -84,11 +85,17 @@ function TeacherSetup() {
   const [viewTransforms, setViewTransforms] = useState<Record<VideoRole, ViewTransform>>({ face: defaultTransform, document: defaultTransform });
   const [audioProcessing, setAudioProcessing] = useState<AudioProcessingSettings>(defaultAudioProcessingSettings);
 
-  const previews = useCameraPreviews(selectedDevices);
+  const screenShare = useScreenShare();
+  // Remember the document camera choice while its capture is temporarily
+  // replaced. A shared face camera stays leased once; a document-only camera
+  // can be released until the user stops sharing their screen.
+  const activeDevices = { ...selectedDevices, document: screenShare.stream ? null : selectedDevices.document };
+  const previews = useCameraPreviews(activeDevices);
   const audioInputs = useAudioInputDevices();
   // The lesson sender leases the same manager-owned streams used by previews.
   // That keeps camera capture single even while local preview and WebRTC both use it.
-  const lesson = useLessonSession("teacher", selectedDevices, null, viewTransforms, audioInputs.selectedDeviceId, audioProcessing);
+  const lesson = useLessonSession("teacher", activeDevices, null, viewTransforms, audioInputs.selectedDeviceId, audioProcessing,
+    screenShare.stream ? { stream: screenShare.stream, onFailure: screenShare.fail } : null);
   const [copiedLink, setCopiedLink] = useState(false);
   const [inMeeting, setInMeeting] = useState(false);
 
@@ -179,6 +186,7 @@ function TeacherSetup() {
   }
 
   function exitMeeting() {
+    screenShare.stop();
     setInMeeting(false);
     setSelectedDevices({ face: null, document: null });
     lesson.exitRoom();
@@ -186,13 +194,25 @@ function TeacherSetup() {
 
   const selectedCount = Object.values(selectedDevices).filter(Boolean).length;
   const uniqueSelectedCount = new Set(Object.values(selectedDevices).filter(Boolean)).size;
-  const rolesShareCamera = Boolean(selectedDevices.face && selectedDevices.face === selectedDevices.document);
+  const rolesShareCamera = !screenShare.stream && Boolean(selectedDevices.face && selectedDevices.face === selectedDevices.document);
   const meetingCameraSettings = (
     <div className="meeting-view-settings">
       <MicrophoneSettings inputs={audioInputs} enabled={lesson.audioEnabled} processing={audioProcessing} onChange={setAudioProcessing} />
+      <fieldset>
+        <legend>Share a screen</legend>
+        <p className="settings-help-copy">Share a window, tab, or screen in the document view. Your face camera and microphone stay separate. Screen audio is not shared.</p>
+        {screenShare.stream ? (
+          <button className="meeting-permission-button" type="button" onClick={screenShare.stop}>Return to document camera</button>
+        ) : (
+          <button className="meeting-permission-button" type="button" disabled={screenShare.pending} onClick={() => void screenShare.start()}>
+            {screenShare.pending ? "Choosing a screen…" : "Share screen"}
+          </button>
+        )}
+      </fieldset>
       {(["face", "document"] as const).map((role) => (
-        <fieldset key={role}>
+        <fieldset key={role} disabled={role === "document" && Boolean(screenShare.stream)}>
           <legend>{roleLabels[role]}</legend>
+          {role === "document" && screenShare.stream && <p className="settings-help-copy">Screen sharing is active. Stop sharing to restore this camera and its orientation.</p>}
           <label>
             Camera
             <select value={selectedDevices[role] ?? ""} onChange={(event) => selectDevice(role, event.target.value)}>
@@ -232,7 +252,7 @@ function TeacherSetup() {
         roomId={lesson.roomId ?? ""}
         connectionState={lesson.status}
         connectionStatus={lesson.statusMessage}
-        mainVideo={selectedDevices.document ? lesson.outgoingVideoStreams[selectedDevices.document] ?? previews.sources[selectedDevices.document]?.stream ?? null : null}
+        mainVideo={screenShare.stream ?? (selectedDevices.document ? lesson.outgoingVideoStreams[selectedDevices.document] ?? previews.sources[selectedDevices.document]?.stream ?? null : null)}
         localFaceVideo={selectedDevices.face ? lesson.outgoingVideoStreams[selectedDevices.face] ?? previews.sources[selectedDevices.face]?.stream ?? null : null}
         remoteFaceVideo={lesson.remoteStudentVideoStream}
         remoteAudio={lesson.remoteStream}
@@ -240,7 +260,9 @@ function TeacherSetup() {
         remoteMicrophoneEnabled={lesson.remoteAudioEnabled}
         qualitySamples={lesson.qualitySamples}
         audioError={lesson.audioError}
-        videoError={lesson.videoError}
+        videoError={screenShare.error || lesson.videoError}
+        sharingScreen={Boolean(screenShare.stream)}
+        onStopScreenShare={screenShare.stop}
         mainRotation={0}
         mainMirrored={false}
         localFaceRotation={0}
