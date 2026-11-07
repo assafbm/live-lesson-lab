@@ -2,6 +2,9 @@
 import { CognitoJwtVerifier } from "aws-jwt-verify";
 
 export type VerifiedIdentity = { userId: string; email: string; expiresAt: number };
+// Invitation guests have a connection-scoped identity, never a verified email.
+// Keeping the union explicit prevents guest attendance granting recording access.
+export type LessonIdentity = VerifiedIdentity | { userId: string; expiresAt: number; guest: true };
 export function identityFromVerifiedClaims(claims: Record<string, unknown>): VerifiedIdentity {
   if (typeof claims.sub !== "string" || !claims.sub || claims.email_verified !== true
     || typeof claims.email !== "string" || !claims.email || typeof claims.exp !== "number"

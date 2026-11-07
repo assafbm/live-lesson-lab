@@ -2,6 +2,14 @@ import { test, expect } from "@playwright/test";
 import { isInvitationOpen, parseClientMessage, MAX_SIGNALING_BYTES } from "../packages/shared/src/index";
 import { summarizeMediaQuality } from "../apps/web/src/media/MediaQuality";
 
+test("participant names are bounded, trimmed and cannot smuggle control characters", () => {
+  expect(parseClientMessage(JSON.stringify({ type: "participant-name", roomId: "room", name: "  Noa  " })))
+    .toEqual({ type: "participant-name", roomId: "room", name: "Noa" });
+  for (const name of [" ", "x".repeat(61), "bad\nname"]) {
+    expect(parseClientMessage(JSON.stringify({ type: "participant-name", roomId: "room", name }))).toBeNull();
+  }
+});
+
 test("rejects malformed, oversized, empty-room and invalid ICE payloads", () => {
   for (const payload of ["{", "null", "[]", "x".repeat(MAX_SIGNALING_BYTES + 1),
     JSON.stringify({ type: "join-room", roomId: "" }),

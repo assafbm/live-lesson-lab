@@ -53,9 +53,9 @@ try {
   for (const page of [teacher, student]) {
     await expect(page.getByText("The lesson connection is live.", { exact: true })).toBeVisible({ timeout: 45000 });
   }
-  await expect.poll(() => teacher.locator('section[aria-label="Student · Face"] video')
+  await expect.poll(() => teacher.locator('section[aria-label="Student camera"] video')
     .evaluate((video) => video.videoWidth), { timeout: 30000 }).toBeGreaterThan(0);
-  await expect.poll(() => student.locator('section[aria-label="Document"] video')
+  await expect.poll(() => student.locator('section[aria-label="Shared content"] video')
     .evaluate((video) => video.videoWidth), { timeout: 30000 }).toBeGreaterThan(0);
   for (const page of [teacher, student]) await page.getByRole("button", { name: "Unmute", exact: true }).click();
   for (const page of [teacher, student]) {

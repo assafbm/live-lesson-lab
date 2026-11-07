@@ -3,6 +3,7 @@ import type { User } from "oidc-client-ts";
 import { anonymousDevelopment, identityConfigured, identityManager, initializeIdentity, signIn, signOut } from "./identity";
 
 const Account = createContext<User | null>(null);
+export function useAccount() { return useContext(Account); }
 export function AccountControls() {
   const user = useContext(Account);
   if (!user) return null;
@@ -32,11 +33,17 @@ export function AuthGate({ children }: { children: ReactNode }) {
     };
   }, []);
   if (anonymousDevelopment) return <>{children}</>;
+  const params = new URLSearchParams(location.search);
+  const studentInvitation = Boolean(params.get("room")) && (!params.get("role") || params.get("role") === "student");
+  if (!loading && studentInvitation && params.get("guest") === "1") return <>{children}</>;
   if (user && !user.expired && user.profile.email_verified === true) return <Account.Provider value={user}>{children}</Account.Provider>;
+  // A student invitation is an intentional bearer capability. The server still
+  // checks expiry, lock and room capacity; this UI exception grants no teacher rights.
+  if (!loading && studentInvitation) return <>{children}</>;
   return <main className="page-shell"><section className="hero lesson-page">
     <div className="eyebrow">LIVE LESSON LAB</div>
     <h1>Your next<br /><em>lesson starts here.</em></h1>
-    <p className="intro">Anyone can create a lesson. Sign in or register with a verified email to teach or join.</p>
+    <p className="intro">Sign in or register to create a lesson. Students can join directly with an invitation link.</p>
     <p>Only the lesson owner and admitted participants will be eligible for its private recording when recording becomes available.</p>
     {error && <p role="alert">{error}</p>}
     {loading ? <p>Checking your account…</p> : identityConfigured ? <button className="primary-button" type="button" onClick={() => {

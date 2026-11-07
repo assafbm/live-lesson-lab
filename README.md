@@ -9,13 +9,11 @@ A web app for private lessons, with video views for the `face` and `document` ro
 
 ## Run locally
 
-On `codex/room-access`, teachers also have server-enforced invitation expiry,
-lock/unlock, renewal and End lesson controls. This branch includes screen sharing
-and uses protocol v6; it is not deployed. See [room-access decisions](docs/decisions/0008-room-access-controls.md).
-
-On `codex/screen-sharing`, teacher Settings includes Share screen. This feature
-branch is not deployed to the AWS pilot. See [screen-sharing notes](docs/screen-sharing.md)
-for behavior, test limits and the saved baseline.
+The current feature branch includes screen sharing, invitation controls, teacher
+accounts and guest student access. Protocol 8 also adds live participant names,
+separate general/video settings and an icon toolbar. See
+[the guest access and controls decision](docs/decisions/0010-guest-students-and-lesson-controls.md)
+for behavior, test limits and current deployment status.
 
 ```sh
 npm install
@@ -25,10 +23,10 @@ npm run dev
 Vite runs at `http://localhost:5173`; the signaling server health endpoint is at `http://localhost:3001/health`. During development, Vite proxies `/signal` WebSocket connections to the signaling server.
 
 Local development without identity settings remains anonymous and binds loopback.
-Production now requires verified email sign-in through Cognito. Configure all
+Teachers require verified email sign-in through Cognito; students may join by invitation without an account. Configure all
 three `VITE_AUTH_*` values from the infrastructure outputs and `AUTH_USER_POOL_ID`
 plus `AUTH_CLIENT_ID` on the signaling server. Missing production settings deny
-access. The AWS stack supplies server settings automatically. See
+to teacher features. Guest access still requires a valid open invitation. The AWS stack supplies server settings automatically. See
 [the identity and recording decision](docs/decisions/0009-verified-identity-and-private-recordings.md)
 for rollout steps and the distinction between implemented identity and planned recording.
 

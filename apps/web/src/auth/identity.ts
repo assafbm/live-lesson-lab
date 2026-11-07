@@ -52,12 +52,15 @@ export async function signOut() {
   location.assign(url);
 }
 let refresh: Promise<User | null> | null = null;
-export async function getIdentityToken(): Promise<string | null> {
+export async function getIdentityToken(allowGuest = false): Promise<string | null> {
+  if (allowGuest && new URLSearchParams(location.search).get("guest") === "1") return null;
   if (!identityManager) {
-    if (anonymousDevelopment) return null;
+    if (anonymousDevelopment || allowGuest) return null;
     throw new Error("Identity configuration is required");
   }
   let user = await identityManager.getUser();
+  if (!user && allowGuest) return null;
+  if (user?.expired && allowGuest) return null;
   if (user && (user.expires_in ?? 0) < 60 && user.refresh_token) {
     refresh ??= identityManager.signinSilent().finally(() => { refresh = null; });
     user = await refresh;

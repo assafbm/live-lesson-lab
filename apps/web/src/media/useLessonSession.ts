@@ -5,6 +5,7 @@ import { summarizeMediaQuality, type MediaQualitySample, type PreviousMediaStats
 import { cameraSourceManager } from "./CameraSourceManager";
 import { OutgoingVideoTransform, type VideoTransform } from "./OutgoingVideoTransform";
 import { getIdentityToken } from "../auth/identity";
+import { useParticipantName } from "../auth/useParticipantName";
 
 export type VideoSelections = Record<MediaRole, string | null>;
 export type OutgoingVideoTransforms = Record<MediaRole, VideoTransform>;
@@ -33,6 +34,9 @@ function parseServerMessage(payload: string): ServerMessage | null {
     const candidate = message as Record<string, unknown>;
 
     switch (candidate.type) {
+      case "participant-name":
+        return typeof candidate.roomId === "string" && typeof candidate.name === "string" && candidate.name.length <= 60
+          ? { type: "participant-name", roomId: candidate.roomId, name: candidate.name } : null;
       case "authenticated": return { type: "authenticated" };
       case "authentication-error": return typeof candidate.message === "string" ? { type: "authentication-error", message: candidate.message } : null;
       case "room-access":
@@ -128,6 +132,8 @@ export function useLessonSession(
   audioProcessing = defaultAudioProcessingSettings,
   documentScreen: DocumentScreenSource | null = null
 ) {
+  const { name: participantName, updateName: setParticipantName } = useParticipantName(role);
+  const [remoteParticipantName, setRemoteParticipantName] = useState(role === "teacher" ? "Student" : "Teacher");
   const [qualitySamples, setQualitySamples] = useState<MediaQualitySample[]>([]);
   const [signalingReady, setSignalingReady] = useState(false);
   const [status, setStatus] = useState<LessonStatus>("connecting");
@@ -812,7 +818,7 @@ export function useLessonSession(
         // local Node server already sends that greeting as soon as it connects.
         const authenticate = async () => {
           try {
-            const token = await getIdentityToken();
+            const token = await getIdentityToken(role === "student");
             if (disposed || activeSocket.readyState !== WebSocket.OPEN) return;
             activeSocket.send(JSON.stringify(token ? { type: "authenticate", token } : { type: "heartbeat" }));
           } catch {
@@ -842,7 +848,7 @@ export function useLessonSession(
           setSignalingReady(false);
           setStatus("failed");
           setStatusMessage("The web app and signaling service use different protocol versions.");
-        } else if (!message.authenticationRequired || identityAccepted) {
+        } else if (!message.authenticationRequired || identityAccepted || role === "student") {
           setSignalingReady(true);
           if (!roomIdRef.current) { setStatus("ready"); setStatusMessage(identityAccepted ? "Verified and connected to the lesson service." : "Connected to the local lesson service."); }
         }
@@ -858,6 +864,8 @@ export function useLessonSession(
       if (message.type === "authentication-error") {
         setSignalingReady(false);
         closePeerConnection();
+        setStatus("failed");
+        setStatusMessage("Your session expired. Refresh this page to sign in or rejoin.");
         window.dispatchEvent(new Event("lesson-auth-expired"));
         return;
       }
@@ -892,6 +900,7 @@ export function useLessonSession(
         return;
       }
       if (message.type === "peer-left") {
+        setRemoteParticipantName(role === "teacher" ? "Student" : "Teacher");
         closePeerConnection();
         setStatus("waiting");
         setStatusMessage("The other participant left the lesson room. You can stay here while they return.");
@@ -924,6 +933,10 @@ export function useLessonSession(
       }
       if (message.type === "room-access") {
         if (message.roomId === roomIdRef.current && role === "teacher") setRoomAccess({ locked: message.locked, joinExpiresAt: message.joinExpiresAt });
+        return;
+      }
+      if (message.type === "participant-name") {
+        if (message.roomId === roomIdRef.current) setRemoteParticipantName(message.name);
         return;
       }
       if (message.type === "audio-state") {
@@ -1047,7 +1060,14 @@ export function useLessonSession(
     setStatusMessage("You left the lesson room. You can log in again when you are ready.");
   }, [closePeerConnection, send]);
 
+  // Reannounce on each connected session, so late joins and re-entry receive the
+  // latest name. Name changes never recreate the socket or the media connection.
+  useEffect(() => {
+    if (status === "connected" && roomId) send({ type: "participant-name", roomId, name: participantName });
+  }, [participantName, status, roomId, send]);
+
   return {
+    participantName, setParticipantName, remoteParticipantName,
     roomAccess,
     setRoomLocked: (locked: boolean) => { if (roomIdRef.current) send({ type: "set-room-locked", roomId: roomIdRef.current, locked }); },
     renewInvitation: () => { if (roomIdRef.current) send({ type: "renew-invitation", roomId: roomIdRef.current }); },

@@ -11,7 +11,7 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import { isInvitationOpen, INVITATION_LIFETIME_MS, PROTOCOL_VERSION, parseClientMessage } from "@live-lesson-lab/shared";
 import type { ClientMessage, ParticipantRole, ServerMessage } from "@live-lesson-lab/shared";
-import { createIdentityVerifier, type VerifiedIdentity } from "@live-lesson-lab/shared/identity";
+import { createIdentityVerifier, type LessonIdentity } from "@live-lesson-lab/shared/identity";
 
 type WebSocketEvent = {
   requestContext: {
@@ -54,9 +54,10 @@ const verifyIdentity = process.env.AUTH_USER_POOL_ID && process.env.AUTH_CLIENT_
 
 const identityKey = (connectionId: string) => ({ pk: `AUTH#${connectionId}`, sk: "IDENTITY" });
 const lessonKey = (roomId: string) => ({ pk: `LESSON#${roomId}`, sk: "METADATA" });
-function participantItem(roomId: string, identity: VerifiedIdentity, role: ParticipantRole) {
+function participantItem(roomId: string, identity: LessonIdentity, role: ParticipantRole) {
   return { pk: `LESSON#${roomId}`, sk: `PARTICIPANT#${identity.userId}`, userId: identity.userId,
-    verifiedEmail: identity.email, role, admittedAt: new Date().toISOString() };
+    ...("email" in identity ? { verifiedEmail: identity.email, identityType: "verified" } : { identityType: "guest" }),
+    role, admittedAt: new Date().toISOString() };
 }
 
 const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
@@ -152,7 +153,11 @@ async function refreshSession(connectionId: string, membership: Membership) {
   ] }));
 }
 
-async function createRoom(event: WebSocketEvent, identity: VerifiedIdentity) {
+async function createRoom(event: WebSocketEvent, identity: LessonIdentity) {
+  if ("guest" in identity) {
+    await sendTo(event, event.requestContext.connectionId, { type: "authentication-error", message: "Teachers must sign in with a verified email." });
+    return;
+  }
   if (!lessonsTable) throw new Error("Lesson storage is not configured");
   const connectionId = event.requestContext.connectionId;
   if (await getMembership(connectionId)) {
@@ -194,7 +199,7 @@ async function createRoom(event: WebSocketEvent, identity: VerifiedIdentity) {
   await sendTo(event, connectionId, { type: "room-access", roomId, locked: room.locked, joinExpiresAt: room.joinExpiresAt });
 }
 
-async function joinRoom(event: WebSocketEvent, roomId: string, identity: VerifiedIdentity) {
+async function joinRoom(event: WebSocketEvent, roomId: string, identity: LessonIdentity, newGuest = false) {
   if (!lessonsTable) throw new Error("Lesson storage is not configured");
   const connectionId = event.requestContext.connectionId;
   if (await getMembership(connectionId)) {
@@ -250,7 +255,12 @@ async function joinRoom(event: WebSocketEvent, roomId: string, identity: Verifie
             ConditionExpression: "attribute_not_exists(pk)"
           }
         },
-        { Put: { TableName: lessonsTable, Item: participantItem(roomId, identity, "student") } }
+        { Put: { TableName: lessonsTable, Item: participantItem(roomId, identity, "student") } },
+        // A guest gets credentials only when admission succeeds. An invalid,
+        // expired, locked or occupied link cannot manufacture a guest session.
+        ...(newGuest ? [{ Put: { TableName: tableName, Item: { ...identityKey(connectionId), ...identity },
+          ConditionExpression: "attribute_not_exists(pk) OR expiresAt <= :now",
+          ExpressionAttributeValues: { ":now": Math.floor(Date.now() / 1000) } } }] : [])
       ]
     }));
   } catch {
@@ -382,12 +392,12 @@ async function relay(event: WebSocketEvent, membership: Membership, room: Room, 
   }
 
   if (message.type === "offer" || message.type === "answer" || message.type === "ice-candidate"
-    || message.type === "audio-state" || message.type === "video-role-state") {
+    || message.type === "audio-state" || message.type === "video-role-state" || message.type === "participant-name") {
     await sendTo(event, peerConnectionId, message);
   }
 }
 
-async function handleMessage(event: WebSocketEvent, message: ClientMessage, identity: VerifiedIdentity) {
+async function handleMessage(event: WebSocketEvent, message: ClientMessage, identity: LessonIdentity) {
   const connectionId = event.requestContext.connectionId;
   const membership = await getMembership(connectionId);
   if (membership && membership.userId !== identity.userId) {
@@ -485,8 +495,12 @@ export async function handler(event: WebSocketEvent) {
       return { statusCode: 200, body: "Authentication processed" };
     }
     const identityResult = await documentClient.send(new GetCommand({ TableName: tableName, Key: identityKey(connectionId), ConsistentRead: true }));
-    const identity = identityResult.Item as VerifiedIdentity | undefined;
+    const identity = identityResult.Item as LessonIdentity | undefined;
     if (!identity || identity.expiresAt <= Math.floor(Date.now() / 1000)) {
+      if (message.type === "join-room") {
+        await joinRoom(event, message.roomId, { userId: `guest-${connectionId}`, guest: true, expiresAt: expiresAt() }, true);
+        return { statusCode: 200, body: "Guest admission processed" };
+      }
       await sendTo(event, connectionId, message.type === "heartbeat"
         ? { type: "server-ready", protocolVersion: PROTOCOL_VERSION, authenticationRequired: true }
         : { type: "authentication-error", message: "Sign in with a verified email to continue." });

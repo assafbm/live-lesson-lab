@@ -150,3 +150,13 @@ absent confirmed an explicit configuration error, no signaling connection and
 no horizontal overflow at 390px and 1366px. Real Cognito signup/email delivery,
 invitation return and two authenticated accounts still require a staged rollout.
 There is no recorder yet, so no recording/export quality claim is made.
+
+## Guest students and toolbar validation
+
+The current suite passes 33 tests. Additional cases cover anonymous invitation
+admission and rejection, no guest teacher privileges or verified-email claims,
+validated names and live updates without peer reconstruction, separate settings,
+accessible icon actions and the production AuthGate's student exception. The
+production browser test uses a local signaling service and an isolated preview
+build; it does not use live AWS. Tests rebuild `apps/web/dist` for local endpoints,
+so always rebuild with deployed stack outputs before uploading any assets.

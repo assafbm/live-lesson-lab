@@ -5,6 +5,8 @@ import { MeetingVideoTile } from "./MeetingVideoTile";
 import { AccountControls } from "../auth/AuthGate";
 import { MediaDiagnostics } from "./MediaDiagnostics";
 import type { MediaQualitySample } from "../media/MediaQuality";
+import { DisplayNameInput } from "./DisplayNameInput";
+import { ToolbarIcon } from "./ToolbarIcon";
 
 type MeetingRoomProps = {
   role: ParticipantRole;
@@ -30,6 +32,12 @@ type MeetingRoomProps = {
   remoteFaceRotation?: 0 | 90 | 180 | 270;
   remoteFaceMirrored?: boolean;
   viewSettings?: ReactNode;
+  generalSettings?: ReactNode;
+  participantName: string;
+  remoteParticipantName: string;
+  onNameChange: (name: string) => void;
+  onStartScreenShare?: () => void;
+  screenSharePending?: boolean;
   onToggleMicrophone: () => void;
   onDisconnect: () => void;
 };
@@ -59,15 +67,24 @@ export function MeetingRoom({
   remoteFaceRotation = 0,
   remoteFaceMirrored = false,
   viewSettings,
+  generalSettings,
+  participantName,
+  remoteParticipantName,
+  onNameChange,
+  onStartScreenShare,
+  screenSharePending = false,
   onToggleMicrophone,
   onDisconnect
 }: MeetingRoomProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [audioPlaybackBlocked, setAudioPlaybackBlocked] = useState(false);
-  const [showViewSettings, setShowViewSettings] = useState(false);
+  const [settingsPanel, setSettingsPanel] = useState<"general" | "video" | null>(null);
+  const showViewSettings = settingsPanel !== null;
   const settingsButton = useRef<HTMLButtonElement>(null);
   const closeSettingsButton = useRef<HTMLButtonElement>(null);
-  const peerName = role === "teacher" ? "Student" : "Teacher";
+  const peerName = remoteParticipantName;
+  const videoSettingsButton = useRef<HTMLButtonElement>(null);
+  const returnFocus = () => (settingsPanel === "video" ? videoSettingsButton : settingsButton).current?.focus();
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -86,11 +103,11 @@ export function MeetingRoom({
     if (!showViewSettings) return;
     closeSettingsButton.current?.focus();
     const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { setShowViewSettings(false); settingsButton.current?.focus(); }
+      if (event.key === "Escape") { setSettingsPanel(null); returnFocus(); }
     };
     window.addEventListener("keydown", escape);
     return () => window.removeEventListener("keydown", escape);
-  }, [showViewSettings]);
+  }, [settingsPanel]);
 
   return (
     <main className="meeting-screen">
@@ -108,25 +125,28 @@ export function MeetingRoom({
 
       <div className="meeting-layout">
         <MeetingVideoTile
-          label="Document"
+          label="Shared content"
+          accessibleLabel="Shared content"
           stream={mainVideo}
           main
           detail={sharingScreen ? "You are sharing your screen" : undefined}
           rotation={mainRotation}
           mirrored={mainMirrored}
           zoom={mainZoom}
-          placeholder={role === "teacher" ? "Choose a document camera in Settings to share your desk." : "Waiting for the teacher to share the document camera."}
+          placeholder={role === "teacher" ? "Choose a camera in Video settings or share your screen." : "Waiting for the teacher to share content."}
         />
         <aside className="meeting-side-rail" aria-label="Participant cameras">
           <MeetingVideoTile
-            label="You · Face"
+            label={participantName}
+            accessibleLabel="Your camera"
             stream={localFaceVideo}
             rotation={localFaceRotation}
             mirrored={localFaceMirrored}
             placeholder="Your face camera is off."
           />
           <MeetingVideoTile
-            label={`${peerName} · Face`}
+            label={peerName}
+            accessibleLabel={role === "teacher" ? "Student camera" : "Teacher camera"}
             stream={remoteFaceVideo}
             placeholder={`${peerName} face video will appear here.`}
             detail={remoteMicrophoneEnabled ? "Microphone on" : "Microphone muted"}
@@ -147,25 +167,38 @@ export function MeetingRoom({
       <audio ref={audioRef} autoPlay playsInline />
 
       {/* Role-specific controls are injected here while the room layout stays shared. */}
-      {showViewSettings && viewSettings && (
-        <section id="media-settings" className="meeting-settings-panel" aria-label="Media settings">
+      {showViewSettings && (
+        <section id="media-settings" className="meeting-settings-panel" aria-label={settingsPanel === "video" ? "Video settings" : "Settings"}>
           <div className="meeting-settings-heading">
-            <strong>Media settings</strong>
-            <button ref={closeSettingsButton} type="button" onClick={() => { setShowViewSettings(false); settingsButton.current?.focus(); }} aria-label="Close media settings">×</button>
+            <strong>{settingsPanel === "video" ? "Video settings" : "Settings"}</strong>
+            <button ref={closeSettingsButton} type="button" onClick={() => { setSettingsPanel(null); returnFocus(); }} aria-label="Close settings">×</button>
           </div>
-          {viewSettings}
-          <AccountControls />
-          <MediaDiagnostics samples={qualitySamples} />
+          {settingsPanel === "video" ? viewSettings : <>
+            <DisplayNameInput name={participantName} onChange={onNameChange} />
+            {generalSettings}
+            <AccountControls />
+            <MediaDiagnostics samples={qualitySamples} />
+          </>}
         </section>
       )}
 
       <footer className="meeting-toolbar">
         <span className="meeting-role-caption">{role === "teacher" ? "Teacher" : "Student"}</span>
         <div className="meeting-actions">
-          {sharingScreen && <button className="meeting-action-button" type="button" onClick={onStopScreenShare}>Stop sharing</button>}
-          {viewSettings && <button ref={settingsButton} className="meeting-action-button" type="button" onClick={() => setShowViewSettings((current) => !current)} aria-expanded={showViewSettings} aria-controls="media-settings">Settings</button>}
+          {(onStartScreenShare || sharingScreen) && <button className="meeting-action-button meeting-icon-button" type="button"
+            aria-label={sharingScreen ? "Stop sharing" : "Share screen"} data-tooltip={sharingScreen ? "Stop sharing" : "Share screen"}
+            disabled={screenSharePending} aria-pressed={sharingScreen} onClick={sharingScreen ? onStopScreenShare : onStartScreenShare}>
+            <ToolbarIcon icon={sharingScreen ? "stop" : "share"} /></button>}
+          {viewSettings && <button ref={videoSettingsButton} className="meeting-action-button meeting-icon-button" type="button"
+            onClick={() => setSettingsPanel((current) => current === "video" ? null : "video")} aria-label="Video settings" data-tooltip="Video settings"
+            aria-expanded={settingsPanel === "video"} aria-controls="media-settings"><ToolbarIcon icon="video" /></button>}
+          <button ref={settingsButton} className="meeting-action-button meeting-icon-button" type="button"
+            onClick={() => setSettingsPanel((current) => current === "general" ? null : "general")} aria-label="Settings" data-tooltip="Settings"
+            aria-expanded={settingsPanel === "general"} aria-controls="media-settings"><ToolbarIcon icon="settings" /></button>
           <button
-            className={`meeting-action-button ${microphoneEnabled ? "" : "meeting-action-muted"}`}
+            className={`meeting-action-button meeting-icon-button ${microphoneEnabled ? "" : "meeting-action-muted"}`}
+            aria-label={microphoneEnabled ? "Mute" : "Unmute"}
+            data-tooltip={microphoneEnabled ? "Mute" : "Unmute"}
             type="button"
             onClick={onToggleMicrophone}
             aria-pressed={microphoneEnabled}
@@ -177,14 +210,12 @@ export function MeetingRoom({
                 <svg viewBox="0 0 24 24" fill="none"><rect x="9" y="3" width="6" height="12" rx="3" /><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21m-4 0h8M4 4l16 16" /></svg>
               )}
             </span>
-            {microphoneEnabled ? "Mute" : "Unmute"}
           </button>
-          <button className="meeting-action-button meeting-disconnect-button" type="button" onClick={onDisconnect}>
+          <button className="meeting-action-button meeting-icon-button meeting-disconnect-button" type="button" onClick={onDisconnect} aria-label="Disconnect" data-tooltip="Disconnect">
             <span className="meeting-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M4 10.5a13 13 0 0 1 16 0l-2.2 3.1a9.2 9.2 0 0 0-11.6 0L4 10.5Z" /><path d="m8.2 15.1-1.5 3.3m9.1-3.3 1.5 3.3M12 15v5" /></svg></span>
-            Disconnect
           </button>
         </div>
-        <span className="meeting-role-caption meeting-peer-caption">Talking with {peerName.toLowerCase()}</span>
+        <span className="meeting-role-caption meeting-peer-caption">{peerName}</span>
       </footer>
     </main>
   );

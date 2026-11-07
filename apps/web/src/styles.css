@@ -296,3 +296,12 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   font-size: 0.875rem;
   overflow-wrap: anywhere;
 }
+.meeting-icon-button { position: relative; min-width: 44px; width: 44px; padding: 0; flex-direction: row; }
+.meeting-icon-button::after { content: attr(data-tooltip); position: absolute; bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%); padding: 7px 10px; border-radius: 6px; background: #eef1e9; color: #20271f; font-size: 12px; white-space: nowrap; opacity: 0; pointer-events: none; z-index: 20; }
+.meeting-icon-button:hover::after, .meeting-icon-button:focus-visible::after { opacity: 1; }
+.meeting-icon-button:disabled { opacity: .55; cursor: wait; }
+.display-name-form { display: flex; align-items: end; gap: 12px; margin: 16px 0; }
+.display-name-form label { display: grid; gap: 6px; font-size: 13px; flex: 1; min-width: 0; }
+.display-name-form input { box-sizing: border-box; width: 100%; border: 1px solid #929b8c; border-radius: 7px; padding: 9px 11px; font: inherit; color: inherit; background: transparent; }
+.meeting-settings-panel .display-name-form { padding: 0 6px; }
+.meeting-tile-label > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import { isInvitationOpen, INVITATION_LIFETIME_MS, MAX_SIGNALING_BYTES, PROTOCOL_VERSION, parseClientMessage } from "@live-lesson-lab/shared";
 import type { ClientMessage, ServerMessage } from "@live-lesson-lab/shared";
-import { createIdentityVerifier, type VerifiedIdentity } from "@live-lesson-lab/shared/identity";
+import { createIdentityVerifier, type LessonIdentity } from "@live-lesson-lab/shared/identity";
 
 type Room = {
   ownerUserId: string;
@@ -29,7 +29,7 @@ type Membership = {
 const port = Number(process.env.PORT ?? process.env.SIGNALING_PORT ?? 3001);
 const rooms = new Map<string, Room>();
 const memberships = new Map<WebSocket, Membership>();
-const identities = new Map<WebSocket, VerifiedIdentity>();
+const identities = new Map<WebSocket, LessonIdentity>();
 const verifyIdentity = process.env.AUTH_USER_POOL_ID && process.env.AUTH_CLIENT_ID
   ? createIdentityVerifier(process.env.AUTH_USER_POOL_ID, process.env.AUTH_CLIENT_ID) : null;
 // Anonymous mode is a loopback-only development aid, never a production fallback.
@@ -155,7 +155,7 @@ function relay(socket: WebSocket, membership: Membership, room: Room, message: C
     return;
   }
 
-  if (message.type === "audio-state") {
+  if (message.type === "audio-state" || message.type === "participant-name") {
     send(peer, message);
     return;
   }
@@ -192,6 +192,11 @@ function handleMessage(socket: WebSocket, message: ClientMessage) {
   }
 
   if (message.type === "create-room") {
+    const identity = identities.get(socket);
+    if (!identity || "guest" in identity) {
+      send(socket, { type: "authentication-error", message: "Teachers must sign in with a verified email." });
+      return;
+    }
     if (memberships.has(socket)) {
       sendError(socket, "Leave the current room before creating another one.");
       return;
@@ -231,6 +236,9 @@ function handleMessage(socket: WebSocket, message: ClientMessage) {
       return;
     }
 
+    if (!identities.has(socket)) identities.set(socket, {
+      userId: `guest-${randomUUID()}`, guest: true, expiresAt: Math.floor(Date.now() / 1000) + 8 * 60 * 60
+    });
     room.student = socket;
     room.studentEntered = true;
     memberships.set(socket, { roomId: message.roomId, role: "student" });
@@ -345,6 +353,15 @@ webSocketServer.on("connection", (socket) => {
       }
       const identity = identities.get(socket);
       if (!identity || identity.expiresAt <= Date.now() / 1000) {
+        if (message.type === "heartbeat") {
+          send(socket, { type: "server-ready", protocolVersion: PROTOCOL_VERSION, authenticationRequired: true });
+          return;
+        }
+        if (message.type === "join-room") {
+          if (identity) { sendError(socket, "Your session expired. Refresh the invitation to rejoin."); return; }
+          handleMessage(socket, message);
+          return;
+        }
         send(socket, { type: "authentication-error", message: "Sign in with a verified email to continue." });
         return;
       }

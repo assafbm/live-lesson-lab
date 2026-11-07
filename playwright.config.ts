@@ -16,6 +16,10 @@ export default defineConfig({
   },
   webServer: [
     { command: "node services/signaling/dist/index.js", url: "http://127.0.0.1:4301/health", env: { SIGNALING_PORT: "4301" } },
-    { command: "npm run dev --workspace @live-lesson-lab/web -- --host 127.0.0.1 --port 4173", url: "http://127.0.0.1:4173", env: { SIGNALING_PORT: "4301" } }
+    { command: "npm run dev --workspace @live-lesson-lab/web -- --host 127.0.0.1 --port 4173", url: "http://127.0.0.1:4173", env: { SIGNALING_PORT: "4301" } },
+    // Exercise the real production AuthGate, where import.meta.env.DEV is false.
+    // These settings belong only to the test build, never the deployed bundle.
+    { command: "npm run build --workspace @live-lesson-lab/web && node node_modules/vite/bin/vite.js preview apps/web --host 127.0.0.1 --port 4174 --strictPort",
+      url: "http://127.0.0.1:4174", env: { VITE_SIGNALING_URL: "ws://127.0.0.1:4301/signal", VITE_AUTH_AUTHORITY: "", VITE_AUTH_CLIENT_ID: "", VITE_AUTH_DOMAIN: "" } }
   ]
 });

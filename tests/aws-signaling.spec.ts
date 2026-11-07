@@ -163,3 +163,41 @@ test("AWS fails closed when identity service configuration is absent", async () 
   expect(delivered.at(-1).type).toBe("authentication-error");
   expect(writes).toHaveLength(0);
 });
+
+test("AWS invitation admits an unsigned student atomically without verified email or teacher rights", async () => {
+  delete rows["AUTH#student"];
+  rows["ROOM#room"] = { roomId: "room", ownerUserId: "teacher", teacherConnectionId: "teacher",
+    expiresAt: Date.now() / 1000 + 300, locked: false, joinExpiresAt: Date.now() + 60000 };
+  await handle({ type: "join-room", roomId: "room" });
+  expect(delivered.at(-1).type).toBe("room-joined");
+  const items = writes[0].TransactItems;
+  expect(items).toHaveLength(4);
+  expect(items[2].Put.Item.identityType).toBe("guest");
+  expect(items[2].Put.Item.verifiedEmail).toBeUndefined();
+  const guest = items[3].Put.Item;
+  expect(guest.guest).toBe(true);
+  rows["AUTH#student"] = guest;
+  rows["CONNECTION#student"] = items[1].Put.Item;
+  rows["ROOM#room"].studentConnectionId = "student";
+  writes = [];
+  await handle({ type: "create-room" });
+  expect(delivered.at(-1).type).toBe("authentication-error");
+  await handle({ type: "end-room", roomId: "room" });
+  expect(delivered.at(-1).message).toContain("Only the room's teacher");
+  await handle({ type: "audio-state", roomId: "other-room", enabled: true });
+  expect(delivered.at(-1).type).toBe("room-error");
+  expect(writes).toHaveLength(0);
+});
+
+test("AWS rejected guest invitations create neither identity nor attendance", async () => {
+  delete rows["AUTH#student"];
+  await handle({ type: "join-room", roomId: "missing" });
+  expect(delivered.at(-1).type).toBe("room-error");
+  for (const state of [{ locked: true }, { joinExpiresAt: 1 }, { studentConnectionId: "someone" }]) {
+    rows["ROOM#room"] = { roomId: "room", ownerUserId: "teacher", teacherConnectionId: "teacher",
+      expiresAt: Date.now() / 1000 + 300, locked: false, joinExpiresAt: Date.now() + 60000, ...state };
+    await handle({ type: "join-room", roomId: "room" });
+    expect(delivered.at(-1).type).toBe("room-error");
+  }
+  expect(writes).toHaveLength(0);
+});

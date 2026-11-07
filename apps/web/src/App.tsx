@@ -9,6 +9,7 @@ import { useAudioInputDevices } from "./media/useAudioInputDevices";
 import { useScreenShare } from "./media/useScreenShare";
 import { RoomAccessControls } from "./components/RoomAccessControls";
 import { AccountControls } from "./auth/AuthGate";
+import { DisplayNameInput } from "./components/DisplayNameInput";
 
 type CameraDevice = {
   deviceId: string;
@@ -206,19 +207,6 @@ function TeacherSetup() {
   const rolesShareCamera = !screenShare.stream && Boolean(selectedDevices.face && selectedDevices.face === selectedDevices.document);
   const meetingCameraSettings = (
     <div className="meeting-view-settings">
-      {accessControls}
-      <MicrophoneSettings inputs={audioInputs} enabled={lesson.audioEnabled} processing={audioProcessing} onChange={setAudioProcessing} />
-      <fieldset>
-        <legend>Share a screen</legend>
-        <p className="settings-help-copy">Share a window, tab, or screen in the document view. Your face camera and microphone stay separate. Screen audio is not shared.</p>
-        {screenShare.stream ? (
-          <button className="meeting-permission-button" type="button" onClick={screenShare.stop}>Return to document camera</button>
-        ) : (
-          <button className="meeting-permission-button" type="button" disabled={screenShare.pending} onClick={() => void screenShare.start()}>
-            {screenShare.pending ? "Choosing a screen…" : "Share screen"}
-          </button>
-        )}
-      </fieldset>
       {(["face", "document"] as const).map((role) => (
         <fieldset key={role} disabled={role === "document" && Boolean(screenShare.stream)}>
           <legend>{roleLabels[role]}</legend>
@@ -273,6 +261,12 @@ function TeacherSetup() {
         videoError={screenShare.error || lesson.videoError}
         sharingScreen={Boolean(screenShare.stream)}
         onStopScreenShare={screenShare.stop}
+        onStartScreenShare={() => void screenShare.start()}
+        screenSharePending={screenShare.pending}
+        participantName={lesson.participantName}
+        remoteParticipantName={lesson.remoteParticipantName}
+        onNameChange={lesson.setParticipantName}
+        generalSettings={<div className="meeting-view-settings">{accessControls}<MicrophoneSettings inputs={audioInputs} enabled={lesson.audioEnabled} processing={audioProcessing} onChange={setAudioProcessing} /></div>}
         mainRotation={0}
         mainMirrored={false}
         localFaceRotation={0}
@@ -304,6 +298,7 @@ function TeacherSetup() {
           Choose a camera for each view. You can use one camera for both, or leave either view off.
         </p>
         <AccountControls />
+        <DisplayNameInput name={lesson.participantName} onChange={lesson.setParticipantName} />
 
         <section className="lesson-controls" aria-labelledby="lesson-controls-title">
           <div className="lesson-controls-heading">

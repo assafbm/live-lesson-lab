@@ -1,5 +1,6 @@
 import { MicrophoneSettings } from "./MicrophoneSettings";
-import { AccountControls } from "../auth/AuthGate";
+import { AccountControls, useAccount } from "../auth/AuthGate";
+import { DisplayNameInput } from "./DisplayNameInput";
 import { useEffect, useState } from "react";
 import type { MediaRole } from "@live-lesson-lab/shared";
 import { CameraPreview } from "./CameraPreview";
@@ -34,6 +35,7 @@ async function listCameras(): Promise<CameraDevice[]> {
 
 /** The student lobby owns setup; the connected state renders a separate full-screen meeting. */
 export function StudentLesson({ roomId }: StudentLessonProps) {
+  const account = useAccount();
   const [studentCameraId, setStudentCameraId] = useState<string | null>(null);
   const [cameraDevices, setCameraDevices] = useState<CameraDevice[]>([]);
   const [cameraPermissionReady, setCameraPermissionReady] = useState(false);
@@ -135,7 +137,6 @@ export function StudentLesson({ roomId }: StudentLessonProps) {
 
   const viewSettings = (
     <div className="meeting-view-settings">
-      <MicrophoneSettings inputs={audioInputs} enabled={lesson.audioEnabled} processing={audioProcessing} onChange={setAudioProcessing} />
       <fieldset>
         <legend>Your camera</legend>
         {cameraPermissionReady && cameraDevices.length > 0 ? (
@@ -220,6 +221,10 @@ export function StudentLesson({ roomId }: StudentLessonProps) {
         remoteFaceRotation={viewTransforms.face.rotation}
         remoteFaceMirrored={viewTransforms.face.mirrored}
         viewSettings={viewSettings}
+        participantName={lesson.participantName}
+        remoteParticipantName={lesson.remoteParticipantName}
+        onNameChange={lesson.setParticipantName}
+        generalSettings={<div className="meeting-view-settings"><MicrophoneSettings inputs={audioInputs} enabled={lesson.audioEnabled} processing={audioProcessing} onChange={setAudioProcessing} /></div>}
         onToggleMicrophone={() => lesson.setAudioEnabled(!lesson.audioEnabled)}
         onDisconnect={exitLesson}
       />
@@ -244,6 +249,10 @@ export function StudentLesson({ roomId }: StudentLessonProps) {
         <h1 id="student-title">Join your<br /><em>lesson.</em></h1>
         <p className="intro">Check your camera, then connect to your teacher.</p>
         <AccountControls />
+        {account && <button className="text-button" type="button" onClick={() => {
+          const target = new URL(location.href); target.searchParams.set("guest", "1"); location.assign(target.href);
+        }}>Continue as guest</button>}
+        <DisplayNameInput name={lesson.participantName} onChange={lesson.setParticipantName} />
 
         <section className="lesson-card student-lobby-card" aria-live="polite">
           <span className="camera-role-label">ROOM {roomId.slice(0, 8).toUpperCase()}</span>

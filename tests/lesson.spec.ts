@@ -87,8 +87,8 @@ test("two-way media, one shared camera sender, transforms, microphone recovery, 
   student.on("pageerror", (error) => errors.push(error.message));
   try {
     await joinPair(teacher, student);
-    await expect.poll(() => teacher.locator('section[aria-label="Student · Face"] video').evaluate((video: HTMLVideoElement) => video.videoWidth)).toBeGreaterThan(0);
-    await expect.poll(() => student.locator('section[aria-label="Document"] video').evaluate((video: HTMLVideoElement) => video.videoWidth)).toBeGreaterThan(0);
+    await expect.poll(() => teacher.locator('section[aria-label="Student camera"] video').evaluate((video: HTMLVideoElement) => video.videoWidth)).toBeGreaterThan(0);
+    await expect.poll(() => student.locator('section[aria-label="Shared content"] video').evaluate((video: HTMLVideoElement) => video.videoWidth)).toBeGreaterThan(0);
     expect(await teacher.evaluate(() => (window as any).__mediaTest.peers.at(-1).getSenders().filter((sender: RTCRtpSender) => sender.track?.kind === "video").length)).toBe(1);
     expect(await teacher.evaluate(() => (window as any).__mediaTest.streams.filter((stream: MediaStream) => stream.getVideoTracks().some((track) => track.readyState === "live")).length)).toBe(1);
 
@@ -112,8 +112,10 @@ test("two-way media, one shared camera sender, transforms, microphone recovery, 
     await expect.poll(() => teacher.evaluate(() => (window as any).__mediaTest.peers.at(-1).getSenders().find((sender: RTCRtpSender) => sender.track?.kind === "audio").track.getSettings().noiseSuppression)).toBe(false);
     expect(await teacher.evaluate(() => (window as any).__mediaTest.streams.length)).toBeLessThanOrEqual(capturesBefore + 1);
     expect(await teacher.evaluate(() => (window as any).__mediaTest.streams.filter((stream: MediaStream) => stream.getAudioTracks().some((track) => track.readyState === "live")).length)).toBe(1);
+    await teacher.getByRole("button", { name: "Video settings", exact: true }).click();
     await teacher.getByRole("group", { name: "Document camera", exact: true }).getByLabel("Rotate before sending").selectOption("90");
-    await expect.poll(() => student.locator('section[aria-label="Document"] video').evaluate((video: HTMLVideoElement) => video.videoHeight > video.videoWidth)).toBe(true);
+    await expect.poll(() => student.locator('section[aria-label="Shared content"] video').evaluate((video: HTMLVideoElement) => video.videoHeight > video.videoWidth)).toBe(true);
+    await teacher.getByRole("button", { name: "Settings", exact: true }).click();
     await teacher.getByText("Connection diagnostics", { exact: true }).click();
     await expect(teacher.getByText(/Receiving audio/)).toBeVisible();
     await teacher.screenshot({ path: info.outputPath("teacher-settings.png") });
@@ -121,9 +123,9 @@ test("two-way media, one shared camera sender, transforms, microphone recovery, 
     await expect(teacher.getByRole("button", { name: "Settings", exact: true })).toBeFocused();
 
     await student.getByRole("button", { name: "Unmute", exact: true }).click();
-    await expect(teacher.getByText("Microphone on", { exact: true })).toBeVisible();
+    await expect(teacher.getByLabel("Microphone on", { exact: true })).toHaveCount(1);
     await student.getByRole("button", { name: "Mute", exact: true }).click();
-    await expect(teacher.getByText("Microphone muted", { exact: true })).toBeVisible();
+    await expect(teacher.getByLabel("Microphone muted", { exact: true })).toHaveCount(1);
     await student.getByRole("button", { name: "Disconnect", exact: true }).click();
     await expect.poll(() => student.evaluate(() => (window as any).__mediaTest.streams.flatMap((stream: MediaStream) => stream.getTracks()).filter((track: MediaStreamTrack) => track.readyState === "live").length)).toBe(0);
     await expect(teacher.locator(".meeting-screen")).toBeVisible();
@@ -139,9 +141,9 @@ test("camera can start after joining and blocked audio has a working recovery ac
   try {
     await joinPair(teacher, student, false);
     await expect(teacher.getByText("Student face video will appear here.")).toBeVisible();
-    await student.getByRole("button", { name: "Settings", exact: true }).click();
+    await student.getByRole("button", { name: "Video settings", exact: true }).click();
     await student.getByRole("button", { name: "Enable my camera", exact: true }).click();
-    await expect.poll(() => teacher.locator('section[aria-label="Student · Face"] video').evaluate((video: HTMLVideoElement) => video.videoWidth)).toBeGreaterThan(0);
+    await expect.poll(() => teacher.locator('section[aria-label="Student camera"] video').evaluate((video: HTMLVideoElement) => video.videoWidth)).toBeGreaterThan(0);
     expect(await student.evaluate(() => (window as any).__mediaTest.peers.at(-1).getTransceivers().length)).toBe(4);
 
     // A new receiver stream exercises the normal autoplay recovery path.
@@ -187,7 +189,7 @@ test("screen sharing replaces only the document source and restores the shared c
     await teacher.getByRole("button", { name: "Share screen", exact: true }).click();
     await expect(teacher.getByRole("button", { name: "Stop sharing", exact: true })).toBeVisible();
     await expect.poll(() => teacher.evaluate(() => (window as any).__mediaTest.peers.at(-1).getSenders().filter((sender: RTCRtpSender) => sender.track?.kind === "video").length)).toBe(2);
-    await expect.poll(() => student.locator('section[aria-label="Document"] video').evaluate((video: HTMLVideoElement) => video.videoWidth)).toBe(800);
+    await expect.poll(() => student.locator('section[aria-label="Shared content"] video').evaluate((video: HTMLVideoElement) => video.videoWidth)).toBe(800);
     expect(await teacher.evaluate(() => (window as any).__mediaTest.displayOptions.audio)).toBe(false);
     expect(await teacher.evaluate(() => (window as any).__mediaTest.peers.at(-1).getSenders().find((sender: RTCRtpSender) => sender.track?.kind === "audio").track.id)).toBe(microphone);
     expect(await teacher.evaluate(() => (window as any).__mediaTest.peers.at(-1).getTransceivers().length)).toBe(4);
@@ -205,7 +207,7 @@ test("screen sharing replaces only the document source and restores the shared c
     });
     await expect(teacher.getByRole("button", { name: "Stop sharing", exact: true })).toBeHidden();
     await expect.poll(() => teacher.evaluate(() => (window as any).__mediaTest.peers.at(-1).getSenders().filter((sender: RTCRtpSender) => sender.track?.kind === "video").length)).toBe(1);
-    await expect.poll(() => student.locator('section[aria-label="Document"] video').evaluate((video: HTMLVideoElement) => video.videoWidth)).toBeGreaterThan(800);
+    await expect.poll(() => student.locator('section[aria-label="Shared content"] video').evaluate((video: HTMLVideoElement) => video.videoWidth)).toBeGreaterThan(800);
     const packets = await inboundPackets(student);
     await expect.poll(() => inboundPackets(student)).toBeGreaterThan(packets + 20);
   } finally { await context.close(); }
@@ -253,7 +255,7 @@ test("a rejected screen sender swap releases the display and restores the camera
     await expect(teacher.getByRole("button", { name: "Stop sharing", exact: true })).toBeHidden();
     await expect.poll(() => teacher.evaluate(() => (window as any).__mediaTest.displays[0].getVideoTracks()[0].readyState)).toBe("ended");
     await expect.poll(() => teacher.evaluate(() => (window as any).__mediaTest.peers.at(-1).getSenders().filter((sender: RTCRtpSender) => sender.track?.kind === "video").length)).toBe(1);
-    await expect.poll(() => student.locator('section[aria-label="Document"] video').evaluate((video: HTMLVideoElement) => video.videoWidth)).toBeGreaterThan(0);
+    await expect.poll(() => student.locator('section[aria-label="Shared content"] video').evaluate((video: HTMLVideoElement) => video.videoWidth)).toBeGreaterThan(0);
   } finally { await context.close(); }
 });
 
@@ -292,5 +294,59 @@ test("teacher can lock entry, student can retry after unlock, and ending release
       await expect.poll(() => page.evaluate(() => (window as any).__mediaTest.streams.concat((window as any).__mediaTest.displays)
         .flatMap((stream: MediaStream) => stream.getTracks()).filter((track: MediaStreamTrack) => track.readyState === "live").length)).toBe(0);
     }
+  } finally { await context.close(); }
+});
+
+test("participant names update live, settings are separated, and toolbar icons are accessible", async ({ page: teacher, browser }, info) => {
+  const context = await browser.newContext({ permissions: ["camera", "microphone"] });
+  const student = await context.newPage();
+  try {
+    await joinPair(teacher, student);
+    const peerCount = await teacher.evaluate(() => (window as any).__mediaTest.peers.length);
+    await teacher.getByRole("button", { name: "Settings", exact: true }).click();
+    await teacher.getByLabel("Your name", { exact: true }).fill("Assaf");
+    await teacher.getByRole("button", { name: "Save name", exact: true }).click();
+    await expect(student.getByRole("region", { name: "Teacher camera", exact: true }).getByText("Assaf", { exact: true })).toBeVisible();
+    await expect(teacher.getByRole("group", { name: "Document camera", exact: true })).toHaveCount(0);
+    await expect(teacher.getByLabel("Noise suppression", { exact: true })).toBeVisible();
+    await teacher.getByRole("button", { name: "Video settings", exact: true }).click();
+    await expect(teacher.getByLabel("Your name", { exact: true })).toHaveCount(0);
+    await expect(teacher.getByLabel("Noise suppression", { exact: true })).toHaveCount(0);
+    await expect(teacher.getByRole("group", { name: "Document camera", exact: true })).toBeVisible();
+    await teacher.keyboard.press("Escape");
+    await expect(teacher.getByRole("button", { name: "Video settings", exact: true })).toBeFocused();
+    await student.getByRole("button", { name: "Settings", exact: true }).click();
+    await student.getByLabel("Your name", { exact: true }).fill("Noa");
+    await student.getByRole("button", { name: "Save name", exact: true }).click();
+    await expect(teacher.getByRole("region", { name: "Student camera", exact: true }).getByText("Noa", { exact: true })).toBeVisible();
+    await expect(teacher.getByRole("region", { name: "Shared content", exact: true }).locator(".meeting-tile-label")).toHaveCount(0);
+    for (const label of ["Settings", "Video settings", "Share screen", "Unmute", "Disconnect"]) {
+      const button = teacher.getByRole("button", { name: label, exact: true });
+      await expect(button).toHaveAttribute("data-tooltip", label);
+      await expect(button).toHaveText("");
+    }
+    expect(await teacher.evaluate(() => (window as any).__mediaTest.peers.length)).toBe(peerCount);
+    await teacher.screenshot({ path: info.outputPath("named-lesson.png") });
+  } finally { await context.close(); }
+});
+
+test("production invitation opens for a guest while teacher setup stays behind sign-in", async ({ page: teacher, browser }) => {
+  const context = await browser.newContext({ permissions: ["camera", "microphone"] });
+  const student = await context.newPage();
+  try {
+    await student.goto("http://127.0.0.1:4174/?role=teacher");
+    await expect(student.getByRole("alert")).toContainText("sign-in is not configured");
+    await expect(student.getByRole("button", { name: "Create lesson link" })).toHaveCount(0);
+    await instrument(teacher); await instrument(student);
+    await teacher.goto("/");
+    await teacher.getByRole("button", { name: "Create lesson link" }).click();
+    await expect(teacher.locator("#student-link")).toBeVisible();
+    const link = new URL(await teacher.locator("#student-link").inputValue());
+    link.port = "4174";
+    await teacher.getByRole("button", { name: "Join lesson", exact: true }).click();
+    await student.goto(link.href);
+    await expect(student.getByRole("button", { name: "Sign in or register" })).toHaveCount(0);
+    await student.getByRole("button", { name: "Join lesson", exact: true }).click();
+    await expect(student.getByText("The lesson connection is live.", { exact: true })).toBeVisible();
   } finally { await context.close(); }
 });

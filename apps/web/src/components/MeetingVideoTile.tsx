@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 type MeetingVideoTileProps = {
   label: string;
+  accessibleLabel?: string;
   stream: MediaStream | null;
   main?: boolean;
   placeholder: string;
@@ -14,6 +15,7 @@ type MeetingVideoTileProps = {
 /** A contained video tile. The peer-session hook, not this view, owns tracks. */
 export function MeetingVideoTile({
   label,
+  accessibleLabel,
   stream,
   main = false,
   placeholder,
@@ -58,7 +60,7 @@ export function MeetingVideoTile({
   // Fit the actual rotated dimensions. A fixed scale clips portrait documents
   // on short screens and wastes space on wide screens.
   return (
-    <section ref={tileRef} className={`meeting-video-tile ${main ? "meeting-main-tile" : ""}`} aria-label={label}>
+    <section ref={tileRef} className={`meeting-video-tile ${main ? "meeting-main-tile" : ""}`} aria-label={accessibleLabel ?? label}>
       {stream ? (
         <video
           ref={videoRef}
@@ -70,10 +72,10 @@ export function MeetingVideoTile({
       ) : (
         <div className="meeting-video-placeholder">{placeholder}</div>
       )}
-      <div className="meeting-tile-label">
+      {!main && <div className="meeting-tile-label">
         <span>{label}</span>
-        {detail && <small>{detail}</small>}
-      </div>
+        {detail && <small aria-label={detail} title={detail}>{detail === "Microphone muted" ? "⊘" : ""}</small>}
+      </div>}
       {stream && <span className="meeting-live-dot" aria-label="Video active" />}
     </section>
   );
