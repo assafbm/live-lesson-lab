@@ -55,6 +55,7 @@ jobs:
           VITE_AUTH_AUTHORITY: ${{ vars.VITE_AUTH_AUTHORITY }}
           VITE_AUTH_CLIENT_ID: ${{ vars.VITE_AUTH_CLIENT_ID }}
           VITE_AUTH_DOMAIN: ${{ vars.VITE_AUTH_DOMAIN }}
+          VITE_RECORDINGS_API_URL: ${{ vars.VITE_RECORDINGS_API_URL }}
         run: |
           test -n "$VITE_AUTH_AUTHORITY" || (echo "Missing VITE_AUTH_AUTHORITY" && exit 1)
           test -n "$VITE_AUTH_CLIENT_ID" || (echo "Missing VITE_AUTH_CLIENT_ID" && exit 1)
@@ -72,6 +73,7 @@ jobs:
           VITE_AUTH_AUTHORITY: ${{ vars.VITE_AUTH_AUTHORITY }}
           VITE_AUTH_CLIENT_ID: ${{ vars.VITE_AUTH_CLIENT_ID }}
           VITE_AUTH_DOMAIN: ${{ vars.VITE_AUTH_DOMAIN }}
+          VITE_RECORDINGS_API_URL: ${{ vars.VITE_RECORDINGS_API_URL }}
         run: npm run build --workspace @live-lesson-lab/web
 
       - name: Configure short-lived AWS credentials

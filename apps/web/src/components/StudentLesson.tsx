@@ -1,3 +1,4 @@
+import { identityConfigured, signIn } from "../auth/identity";
 import { RecordingsLibrary } from "../recordings/RecordingsLibrary";
 import { MicrophoneSettings } from "./MicrophoneSettings";
 import { AccountControls, useAccount } from "../auth/AuthGate";
@@ -252,6 +253,11 @@ export function StudentLesson({ roomId }: StudentLessonProps) {
         <h1 id="student-title">Join your<br /><em>lesson.</em></h1>
         <p className="intro">Check your camera, then connect to your teacher.</p>
         <AccountControls />
+        {!account && identityConfigured && <button className="secondary-button" type="button" onClick={() => {
+          const target = new URL(location.href); target.searchParams.delete("guest");
+          history.replaceState(null, "", target.pathname + target.search);
+          void signIn()?.catch(() => setCameraMessage("Sign-in could not be started. Please try again."));
+        }}>Sign in for recordings</button>}
         {account && <button className="text-button" type="button" onClick={() => {
           const target = new URL(location.href); target.searchParams.set("guest", "1"); location.assign(target.href);
         }}>Continue as guest</button>}

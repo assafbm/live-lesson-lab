@@ -44,7 +44,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     <div className="eyebrow">LIVE LESSON LAB</div>
     <h1>Your next<br /><em>lesson starts here.</em></h1>
     <p className="intro">Sign in or register to create a lesson. Students can join directly with an invitation link.</p>
-    <p>Only the lesson owner and admitted participants will be eligible for its private recording when recording becomes available.</p>
+    <p>Recording requires both participants to sign in and consent. Saved recordings are private to those two accounts.</p>
     {error && <p role="alert">{error}</p>}
     {loading ? <p>Checking your account…</p> : identityConfigured ? <button className="primary-button" type="button" onClick={() => {
       void signIn()?.catch(() => setError("Sign-in could not be started. Try again."));
