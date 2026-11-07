@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PROTOCOL_VERSION } from "@live-lesson-lab/shared";
-import type { ClientMessage, IceCandidatePayload, MediaRole, ParticipantRole, ServerMessage, VideoRoleState } from "@live-lesson-lab/shared";
+import type { ClientMessage, IceCandidatePayload, MediaRole, ParticipantRole, ServerMessage, VideoRoleState, LessonTiming } from "@live-lesson-lab/shared";
 import { summarizeMediaQuality, type MediaQualitySample, type PreviousMediaStats } from "./MediaQuality";
 import { cameraSourceManager } from "./CameraSourceManager";
 import { OutgoingVideoTransform, type VideoTransform } from "./OutgoingVideoTransform";
@@ -34,6 +34,10 @@ function parseServerMessage(payload: string): ServerMessage | null {
     const candidate = message as Record<string, unknown>;
 
     switch (candidate.type) {
+      case "lesson-time":
+        return typeof candidate.roomId === "string" && typeof candidate.durationMinutes === "number" && typeof candidate.serverNow === "number"
+          && (candidate.endsAt === null || typeof candidate.endsAt === "number")
+          ? { type: "lesson-time", roomId: candidate.roomId, durationMinutes: candidate.durationMinutes, serverNow: candidate.serverNow, endsAt: candidate.endsAt } : null;
       case "participant-name":
         return typeof candidate.roomId === "string" && typeof candidate.name === "string" && candidate.name.length <= 60
           ? { type: "participant-name", roomId: candidate.roomId, name: candidate.name } : null;
@@ -140,6 +144,7 @@ export function useLessonSession(
   const [statusMessage, setStatusMessage] = useState("Connecting to the lesson service…");
   const [roomId, setRoomId] = useState<string | null>(null);
   const [roomAccess, setRoomAccess] = useState<{ locked: boolean; joinExpiresAt: number } | null>(null);
+  const [lessonTiming, setLessonTiming] = useState<(LessonTiming & { clockOffset: number }) | null>(null);
   const membershipConfirmedRef = useRef(false);
   const [audioEnabled, setAudioEnabledState] = useState(false);
   const [remoteAudioEnabled, setRemoteAudioEnabled] = useState(false);
@@ -935,6 +940,11 @@ export function useLessonSession(
         if (message.roomId === roomIdRef.current && role === "teacher") setRoomAccess({ locked: message.locked, joinExpiresAt: message.joinExpiresAt });
         return;
       }
+      if (message.type === "lesson-time") {
+        if (message.roomId === roomIdRef.current) setLessonTiming((previous) => previous && previous.serverNow > message.serverNow ? previous
+          : { durationMinutes: message.durationMinutes, endsAt: message.endsAt, serverNow: message.serverNow, clockOffset: message.serverNow - Date.now() });
+        return;
+      }
       if (message.type === "participant-name") {
         if (message.roomId === roomIdRef.current) setRemoteParticipantName(message.name);
         return;
@@ -997,10 +1007,11 @@ export function useLessonSession(
     };
   }, [closePeerConnection, createPeerConnection, handleAnswer, handleCandidate, handleOffer, role, startTeacherOffer]);
 
-  const createRoom = useCallback(() => {
+  const createRoom = useCallback((durationMinutes = 60) => {
     membershipConfirmedRef.current = false;
     setRoomAccess(null);
-    send({ type: "create-room" });
+    setLessonTiming(null);
+    send({ type: "create-room", durationMinutes });
     setStatus("joining");
     setStatusMessage("Creating your lesson room…");
   }, [send]);
@@ -1067,6 +1078,8 @@ export function useLessonSession(
   }, [participantName, status, roomId, send]);
 
   return {
+    lessonTiming,
+    extendLesson: () => { if (roomIdRef.current && lessonTiming?.endsAt) send({ type: "extend-lesson", roomId: roomIdRef.current, expectedEndsAt: lessonTiming.endsAt }); },
     participantName, setParticipantName, remoteParticipantName,
     roomAccess,
     setRoomLocked: (locked: boolean) => { if (roomIdRef.current) send({ type: "set-room-locked", roomId: roomIdRef.current, locked }); },

@@ -23,8 +23,8 @@ export function RoomAccessControls({ access, onLock, onRenew, onEnd }: Props) {
     <p role="status">{access.locked ? "New joins are locked." : expired ? "The invitation has expired." : "New joins are open."}</p>
     <p>Invitation expires at {new Date(access.joinExpiresAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}. Existing participants can continue and re-enter from this browser session.</p>
     <button type="button" className="meeting-permission-button" onClick={() => onLock(!access.locked)}>{access.locked ? "Unlock new joins" : "Lock new joins"}</button>
-    <button type="button" className="meeting-permission-button" onClick={onRenew}>Renew invitation (30 minutes)</button>
-    <p>Renewal reopens the same link's time window. A lock stays in place until you unlock it.</p>
+    <button type="button" className="meeting-permission-button" onClick={onRenew}>Renew invitation</button>
+    <p>The invitation follows the selected lesson length. Renewal reopens this same link for that length; it does not reset the lesson clock. A lock stays in place until you unlock it.</p>
     {confirmEnd ? <div role="group" aria-label="Confirm ending lesson">
       <p>End for everyone? This link will stop working and both participants will leave.</p>
       <button type="button" className="meeting-permission-button" onClick={onEnd}>End lesson now</button>

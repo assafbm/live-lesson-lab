@@ -78,6 +78,7 @@ function MissingStudentRoom() {
 }
 
 function TeacherSetup() {
+  const [durationMinutes, setDurationMinutes] = useState(60);
   const [permission, setPermission] = useState<PermissionState>("idle");
   const [permissionMessage, setPermissionMessage] = useState("");
   const [devices, setDevices] = useState<CameraDevice[]>([]);
@@ -247,6 +248,8 @@ function TeacherSetup() {
     return (
       <MeetingRoom
         role="teacher"
+        lessonTiming={lesson.lessonTiming}
+        onExtendLesson={lesson.extendLesson}
         roomId={lesson.roomId ?? ""}
         connectionState={lesson.status}
         connectionStatus={lesson.statusMessage}
@@ -260,6 +263,7 @@ function TeacherSetup() {
         audioError={lesson.audioError}
         videoError={screenShare.error || lesson.videoError}
         sharingScreen={Boolean(screenShare.stream)}
+        sharedTabController={screenShare.controller}
         onStopScreenShare={screenShare.stop}
         onStartScreenShare={() => void screenShare.start()}
         screenSharePending={screenShare.pending}
@@ -314,8 +318,14 @@ function TeacherSetup() {
 
           {!lesson.roomId ? (
             <div className="lesson-create-row">
+              <label className="duration-picker">Lesson length
+                <select value={durationMinutes} onChange={(event) => setDurationMinutes(Number(event.target.value))}>
+                  {[15, 30, 45, 60, 90, 120, 180, 240].map((minutes) => <option key={minutes} value={minutes}>{minutes} minutes</option>)}
+                </select>
+                <small>The clock starts when you enter.</small>
+              </label>
               <span className="lesson-status-copy">{lesson.statusMessage}</span>
-              <button className="primary-button" type="button" onClick={lesson.createRoom} disabled={!lesson.signalingReady || lesson.status === "joining"}>
+              <button className="primary-button" type="button" onClick={() => lesson.createRoom(durationMinutes)} disabled={!lesson.signalingReady || lesson.status === "joining"}>
                 {lesson.status === "joining" ? "Creating link…" : lesson.signalingReady ? "Create lesson link" : "Connecting…"}
               </button>
             </div>

@@ -201,3 +201,22 @@ test("AWS rejected guest invitations create neither identity nor attendance", as
   }
   expect(writes).toHaveLength(0);
 });
+
+test("AWS lesson deadline starts conditionally and extensions compare the acknowledged deadline", async () => {
+  seed();
+  rows["CONNECTION#teacher"] = { ...rows["CONNECTION#student"], userId: "teacher", role: "teacher" };
+  Object.assign(rows["ROOM#room"], { durationMinutes: 90, locked: true, joinExpiresAt: Date.now() + 120 * 60000 });
+  await handle({ type: "enter-room", roomId: "room" }, "teacher");
+  const start = writes.find((write) => write.ConditionExpression?.includes("attribute_not_exists(endsAt)"));
+  expect(start.ExpressionAttributeValues[":join"]).toBe(rows["ROOM#room"].joinExpiresAt);
+  expect(start.ExpressionAttributeValues[":end"] - Date.now()).toBeGreaterThan(89 * 60000);
+  rows["ROOM#room"].endsAt = start.ExpressionAttributeValues[":end"];
+  writes.length = 0;
+  await handle({ type: "enter-room", roomId: "room" }, "teacher");
+  expect(writes.some((write) => write.ConditionExpression?.includes("attribute_not_exists(endsAt)"))).toBe(false);
+  await handle({ type: "extend-lesson", roomId: "room", expectedEndsAt: rows["ROOM#room"].endsAt }, "teacher");
+  const extension = writes.find((write) => write.ConditionExpression?.includes("endsAt = :expected"));
+  expect(extension.ExpressionAttributeValues[":duration"]).toBe(105);
+  expect(extension.ConditionExpression).toContain("teacherConnectionId = :teacher");
+  expect(extension.UpdateExpression).not.toContain("locked");
+});

@@ -1,6 +1,8 @@
 // Keep protocol versioning in one package so client and server can reject
 // accidental mismatches before they start exchanging room messages.
-export const PROTOCOL_VERSION = 8 as const;
+export const PROTOCOL_VERSION = 9 as const;
+export const DEFAULT_LESSON_MINUTES = 60;
+export type LessonTiming = { durationMinutes: number; endsAt: number | null; serverNow: number };
 export const INVITATION_LIFETIME_MS = 30 * 60 * 1000;
 
 // Fixed invitation expiry is distinct from routing TTL. Missing fields from
@@ -31,7 +33,8 @@ export type ClientMessage =
   | { type: "participant-name"; roomId: string; name: string }
   | { type: "authenticate"; token: string }
   | { type: "heartbeat" }
-  | { type: "create-room" }
+  | { type: "create-room"; durationMinutes?: number }
+  | { type: "extend-lesson"; roomId: string; expectedEndsAt: number }
   | { type: "join-room"; roomId: string }
   | { type: "enter-room"; roomId: string }
   | { type: "exit-room"; roomId: string }
@@ -46,6 +49,7 @@ export type ClientMessage =
   | { type: "video-role-state"; roomId: string; roles: VideoRoleState };
 
 export type ServerMessage =
+  | ({ type: "lesson-time"; roomId: string } & LessonTiming)
   | { type: "participant-name"; roomId: string; name: string }
   | { type: "server-ready"; protocolVersion: typeof PROTOCOL_VERSION; authenticationRequired?: boolean }
   | { type: "authenticated" }
@@ -111,9 +115,16 @@ export function parseClientMessage(payload: string): ClientMessage | null {
       return typeof value.token === "string" && value.token.length > 0 && value.token.length <= 16000
         ? { type: "authenticate", token: value.token } : null;
     case "heartbeat":
-    case "create-room":
     case "leave-room":
       return { type: value.type };
+    case "create-room":
+      return value.durationMinutes === undefined ? { type: value.type }
+        : typeof value.durationMinutes === "number" && Number.isInteger(value.durationMinutes)
+          && value.durationMinutes >= 15 && value.durationMinutes <= 240
+          ? { type: value.type, durationMinutes: value.durationMinutes } : null;
+    case "extend-lesson":
+      return isRoomId(value.roomId) && typeof value.expectedEndsAt === "number" && Number.isSafeInteger(value.expectedEndsAt) && value.expectedEndsAt > 0
+        ? { type: value.type, roomId: value.roomId, expectedEndsAt: value.expectedEndsAt } : null;
     case "enter-room":
     case "exit-room":
     case "join-room":

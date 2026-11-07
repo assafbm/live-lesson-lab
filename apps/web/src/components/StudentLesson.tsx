@@ -203,6 +203,7 @@ export function StudentLesson({ roomId }: StudentLessonProps) {
     return (
       <MeetingRoom
         role="student"
+        lessonTiming={lesson.lessonTiming}
         roomId={roomId}
         connectionState={lesson.status}
         connectionStatus={lesson.statusMessage}

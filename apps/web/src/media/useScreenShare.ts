@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { CapturedTabController } from "./CapturedTabController";
 
 /** Owns display capture separately from physical-camera leases. A browser
  * picker is a user action, so start() calls getDisplayMedia before any await. */
@@ -6,6 +7,7 @@ export function useScreenShare() {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
+  const [controller, setController] = useState<CapturedTabController | null>(null);
   const current = useRef<MediaStream | null>(null);
   const generation = useRef(0);
   const requesting = useRef(false);
@@ -16,7 +18,7 @@ export function useScreenShare() {
     requesting.current = false;
     current.current?.getTracks().forEach((track) => track.stop());
     current.current = null;
-    if (mounted.current) { setStream(null); setPending(false); }
+    if (mounted.current) { setStream(null); setPending(false); setController(null); }
   }, []);
 
   useEffect(() => {
@@ -40,9 +42,12 @@ export function useScreenShare() {
     setPending(true);
     setError("");
     try {
+      const Constructor = (window as unknown as { CaptureController?: new () => CapturedTabController }).CaptureController;
+      const captureController = Constructor ? new Constructor() : undefined;
       const capture = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: 15, max: 30 } }, audio: false
-      });
+        video: { frameRate: { ideal: 15, max: 30 } }, audio: false,
+        ...(captureController ? { controller: captureController } : {})
+      } as DisplayMediaStreamOptions);
       // The picker cannot be cancelled by the app. Disconnect invalidates the
       // request; a late result must be stopped without appearing in the lesson.
       if (!mounted.current || generation.current !== request) {
@@ -59,6 +64,11 @@ export function useScreenShare() {
         if (current.current === capture) stop();
       }, { once: true });
       current.current = capture;
+      // Sharing a window or monitor remains supported, but it must not expose
+      // controls which only operate on browser tabs. No permission is requested here.
+      setController(track.getSettings().displaySurface === "browser" && captureController
+        && ["forwardWheel", "increaseZoomLevel", "decreaseZoomLevel", "resetZoomLevel", "getSupportedZoomLevels"].every((key) => typeof (captureController as unknown as Record<string, unknown>)[key] === "function")
+        ? captureController : null);
       setStream(capture);
     } catch (cause) {
       if (!mounted.current || generation.current !== request) return;
@@ -74,5 +84,5 @@ export function useScreenShare() {
     }
   }, [stop]);
 
-  return { stream, pending, error, start, stop, fail };
+  return { stream, pending, error, start, stop, fail, controller };
 }

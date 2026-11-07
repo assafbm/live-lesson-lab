@@ -46,3 +46,10 @@ test("invitation admission fails closed at expiry and validates control payloads
   expect(isInvitationOpen({}, 99)).toBe(false);
   expect(parseClientMessage(JSON.stringify({ type: "set-room-locked", roomId: "room", locked: "false" }))).toBeNull();
 });
+
+test("lesson duration and extension requests have bounded inputs", () => {
+  for (const durationMinutes of [15, 60, 240]) expect(parseClientMessage(JSON.stringify({ type: "create-room", durationMinutes }))).toEqual({ type: "create-room", durationMinutes });
+  for (const durationMinutes of [0, 14, 241, 30.5, "60"]) expect(parseClientMessage(JSON.stringify({ type: "create-room", durationMinutes }))).toBeNull();
+  expect(parseClientMessage(JSON.stringify({ type: "extend-lesson", roomId: "room", expectedEndsAt: 123 }))).not.toBeNull();
+  expect(parseClientMessage(JSON.stringify({ type: "extend-lesson", roomId: "room", expectedEndsAt: -1 }))).toBeNull();
+});

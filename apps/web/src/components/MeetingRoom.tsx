@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { ParticipantRole } from "@live-lesson-lab/shared";
+import type { ParticipantRole, LessonTiming } from "@live-lesson-lab/shared";
+import { LessonClock } from "./LessonClock";
+import { SharedTabControls } from "./SharedTabControls";
+import type { CapturedTabController } from "../media/CapturedTabController";
 import { MeetingVideoTile } from "./MeetingVideoTile";
 import { AccountControls } from "../auth/AuthGate";
 import { MediaDiagnostics } from "./MediaDiagnostics";
@@ -9,6 +12,9 @@ import { DisplayNameInput } from "./DisplayNameInput";
 import { ToolbarIcon } from "./ToolbarIcon";
 
 type MeetingRoomProps = {
+  lessonTiming?: (LessonTiming & { clockOffset: number }) | null;
+  onExtendLesson?: () => void;
+  sharedTabController?: CapturedTabController | null;
   role: ParticipantRole;
   roomId: string;
   connectionState: string;
@@ -44,6 +50,9 @@ type MeetingRoomProps = {
 
 /** Full-viewport lesson surface shared by teacher and student after connection. */
 export function MeetingRoom({
+  lessonTiming = null,
+  onExtendLesson,
+  sharedTabController = null,
   role,
   roomId,
   connectionState,
@@ -77,6 +86,7 @@ export function MeetingRoom({
   onDisconnect
 }: MeetingRoomProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
+  const mainPreviewRef = useRef<HTMLVideoElement>(null);
   const [audioPlaybackBlocked, setAudioPlaybackBlocked] = useState(false);
   const [settingsPanel, setSettingsPanel] = useState<"general" | "video" | null>(null);
   const showViewSettings = settingsPanel !== null;
@@ -117,6 +127,7 @@ export function MeetingRoom({
           <span>Live Lesson <strong>Lab</strong></span>
         </a>
         <div className="meeting-room-label">
+          <LessonClock timing={lessonTiming} onExtend={onExtendLesson} />
           <span className={`meeting-connection-dot ${connectionState === "connected" ? "meeting-dot-connected" : "meeting-dot-waiting"}`} />
           <span className="meeting-connection-status">{connectionStatus}</span>
           <span className="meeting-room-code">{roomId.slice(0, 8).toUpperCase()}</span>
@@ -127,6 +138,7 @@ export function MeetingRoom({
         <MeetingVideoTile
           label="Shared content"
           accessibleLabel="Shared content"
+          previewRef={mainPreviewRef}
           stream={mainVideo}
           main
           detail={sharingScreen ? "You are sharing your screen" : undefined}
@@ -134,7 +146,9 @@ export function MeetingRoom({
           mirrored={mainMirrored}
           zoom={mainZoom}
           placeholder={role === "teacher" ? "Choose a camera in Video settings or share your screen." : "Waiting for the teacher to share content."}
-        />
+        >
+          {sharingScreen && <SharedTabControls key={mainVideo?.id} controller={sharedTabController} preview={mainPreviewRef} />}
+        </MeetingVideoTile>
         <aside className="meeting-side-rail" aria-label="Participant cameras">
           <MeetingVideoTile
             label={participantName}

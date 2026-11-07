@@ -5,11 +5,13 @@ import { createServer } from "node:http";
 import { extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
-import { isInvitationOpen, INVITATION_LIFETIME_MS, MAX_SIGNALING_BYTES, PROTOCOL_VERSION, parseClientMessage } from "@live-lesson-lab/shared";
+import { isInvitationOpen, DEFAULT_LESSON_MINUTES, MAX_SIGNALING_BYTES, PROTOCOL_VERSION, parseClientMessage } from "@live-lesson-lab/shared";
 import type { ClientMessage, ServerMessage } from "@live-lesson-lab/shared";
 import { createIdentityVerifier, type LessonIdentity } from "@live-lesson-lab/shared/identity";
 
 type Room = {
+  durationMinutes: number;
+  endsAt?: number;
   ownerUserId: string;
   locked: boolean;
   joinExpiresAt: number;
@@ -113,6 +115,12 @@ function sendError(socket: WebSocket, message: string) {
   send(socket, { type: "room-error", message });
 }
 
+function sendTiming(roomId: string, room: Room, socket?: WebSocket) {
+  const message: ServerMessage = { type: "lesson-time", roomId, durationMinutes: room.durationMinutes, endsAt: room.endsAt ?? null, serverNow: Date.now() };
+  if (socket) send(socket, message);
+  else { send(room.teacher, message); if (room.student) send(room.student, message); }
+}
+
 function leaveRoom(socket: WebSocket, reason = "The teacher connection closed. Ask for a new lesson link.") {
   const membership = memberships.get(socket);
   if (!membership) return;
@@ -187,6 +195,9 @@ function handleMessage(socket: WebSocket, message: ClientMessage) {
   // A WebSocket keepalive can preserve quiet sessions through intermediaries;
   // the actual lesson media continues directly between browsers.
   if (message.type === "heartbeat") {
+    const membership = memberships.get(socket);
+    const room = membership && rooms.get(membership.roomId);
+    if (membership && room) sendTiming(membership.roomId, room, socket);
     send(socket, { type: "server-ready", protocolVersion: PROTOCOL_VERSION, authenticationRequired: !anonymousLocal });
     return;
   }
@@ -203,11 +214,13 @@ function handleMessage(socket: WebSocket, message: ClientMessage) {
     }
 
     const roomId = randomUUID();
-    const room: Room = { ownerUserId: identities.get(socket)!.userId, teacher: socket, teacherEntered: false, student: null, studentEntered: false,
-      locked: false, joinExpiresAt: Date.now() + INVITATION_LIFETIME_MS };
+    const durationMinutes = message.durationMinutes ?? DEFAULT_LESSON_MINUTES;
+    const room: Room = { durationMinutes, ownerUserId: identities.get(socket)!.userId, teacher: socket, teacherEntered: false, student: null, studentEntered: false,
+      locked: false, joinExpiresAt: Date.now() + durationMinutes * 60000 };
     rooms.set(roomId, room);
     memberships.set(socket, { roomId, role: "teacher" });
     send(socket, { type: "room-created", roomId });
+    sendTiming(roomId, room, socket);
     send(socket, { type: "room-access", roomId, locked: room.locked, joinExpiresAt: room.joinExpiresAt });
     return;
   }
@@ -243,11 +256,12 @@ function handleMessage(socket: WebSocket, message: ClientMessage) {
     room.studentEntered = true;
     memberships.set(socket, { roomId: message.roomId, role: "student" });
     send(socket, { type: "room-joined", roomId: message.roomId });
+    sendTiming(message.roomId, room, socket);
     if (room.teacherEntered) send(room.teacher, { type: "peer-joined", roomId: message.roomId });
     return;
   }
 
-  if (message.type === "set-room-locked" || message.type === "renew-invitation" || message.type === "end-room") {
+  if (message.type === "set-room-locked" || message.type === "renew-invitation" || message.type === "end-room" || message.type === "extend-lesson") {
     const membership = memberships.get(socket);
     const room = rooms.get(message.roomId);
     if (!membership || membership.role !== "teacher" || membership.roomId !== message.roomId || room?.teacher !== socket
@@ -261,10 +275,20 @@ function handleMessage(socket: WebSocket, message: ClientMessage) {
       send(socket, { type: "room-closed", roomId: message.roomId, reason });
       return;
     }
+    if (message.type === "extend-lesson") {
+      // Compare the displayed deadline: repeated clicks/retries cannot extend
+      // the same deadline twice. Extending never changes the admission lock.
+      if (room.endsAt === message.expectedEndsAt && room.durationMinutes <= 465) {
+        room.durationMinutes += 15;
+        room.endsAt = Math.max(Date.now(), room.endsAt) + 15 * 60000;
+        room.joinExpiresAt = Math.max(room.joinExpiresAt, room.endsAt);
+      }
+      sendTiming(message.roomId, room);
+    }
     if (message.type === "set-room-locked") room.locked = message.locked;
     // Renewal extends this same bearer link; it is deliberately not described
     // as token rotation or revocation. Locking does not expel an admitted peer.
-    if (message.type === "renew-invitation") room.joinExpiresAt = Date.now() + INVITATION_LIFETIME_MS;
+    if (message.type === "renew-invitation") room.joinExpiresAt = Date.now() + room.durationMinutes * 60000;
     send(socket, { type: "room-access", roomId: message.roomId, locked: room.locked, joinExpiresAt: room.joinExpiresAt });
     return;
   }
@@ -286,9 +310,17 @@ function handleMessage(socket: WebSocket, message: ClientMessage) {
       return;
     }
 
-    if (membership.role === "teacher") room.teacherEntered = true;
+    if (membership.role === "teacher") {
+      room.teacherEntered = true;
+      if (!room.endsAt) {
+        room.endsAt = Date.now() + room.durationMinutes * 60000;
+        room.joinExpiresAt = Math.max(room.joinExpiresAt, room.endsAt);
+        send(socket, { type: "room-access", roomId: membership.roomId, locked: room.locked, joinExpiresAt: room.joinExpiresAt });
+      }
+    }
     else room.studentEntered = true;
     send(socket, { type: "room-entered", roomId: message.roomId });
+    sendTiming(message.roomId, room);
     if (room.teacherEntered && room.studentEntered) send(room.teacher, { type: "peer-joined", roomId: message.roomId });
     return;
   }

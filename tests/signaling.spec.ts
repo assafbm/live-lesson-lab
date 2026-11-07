@@ -87,3 +87,34 @@ test("only the teacher can gate new memberships, while admitted participants can
     expect((await student.receive("room-error")).message).toContain("ended");
   } finally { teacher.socket.close(); student.socket.close(); }
 });
+
+test("lesson clock starts on teacher entry and extensions are teacher-only and idempotent", async () => {
+  const teacher = await client();
+  const student = await client();
+  try {
+    teacher.send({ type: "create-room", durationMinutes: 90 });
+    const { roomId } = await teacher.receive("room-created");
+    expect(await teacher.receive("lesson-time")).toMatchObject({ durationMinutes: 90, endsAt: null });
+    await teacher.receive("room-access");
+    teacher.send({ type: "enter-room", roomId });
+    await teacher.receive("room-entered");
+    const started = await teacher.receive("lesson-time");
+    expect(started.endsAt - started.serverNow).toBeGreaterThan(89 * 60000);
+    student.send({ type: "join-room", roomId });
+    await student.receive("room-joined");
+    expect((await student.receive("lesson-time")).endsAt).toBe(started.endsAt);
+    student.send({ type: "extend-lesson", roomId, expectedEndsAt: started.endsAt });
+    expect((await student.receive("room-error")).message).toContain("Only the room's teacher");
+    teacher.send({ type: "extend-lesson", roomId, expectedEndsAt: started.endsAt });
+    const extended = await teacher.receive("lesson-time");
+    expect(extended.durationMinutes).toBe(105);
+    expect(extended.endsAt).toBe(started.endsAt + 15 * 60000);
+    teacher.send({ type: "extend-lesson", roomId, expectedEndsAt: started.endsAt });
+    expect((await teacher.receive("lesson-time")).endsAt).toBe(extended.endsAt);
+    teacher.send({ type: "exit-room", roomId });
+    await teacher.receive("room-exited");
+    teacher.send({ type: "enter-room", roomId });
+    await teacher.receive("room-entered");
+    expect((await teacher.receive("lesson-time")).endsAt).toBe(extended.endsAt);
+  } finally { teacher.socket.close(); student.socket.close(); }
+});

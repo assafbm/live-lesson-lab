@@ -9,7 +9,7 @@ import {
   TransactWriteCommand,
   UpdateCommand
 } from "@aws-sdk/lib-dynamodb";
-import { isInvitationOpen, INVITATION_LIFETIME_MS, PROTOCOL_VERSION, parseClientMessage } from "@live-lesson-lab/shared";
+import { isInvitationOpen, DEFAULT_LESSON_MINUTES, PROTOCOL_VERSION, parseClientMessage } from "@live-lesson-lab/shared";
 import type { ClientMessage, ParticipantRole, ServerMessage } from "@live-lesson-lab/shared";
 import { createIdentityVerifier, type LessonIdentity } from "@live-lesson-lab/shared/identity";
 
@@ -33,6 +33,8 @@ type Membership = {
 };
 
 type Room = {
+  durationMinutes: number;
+  endsAt?: number;
   ownerUserId: string;
   locked: boolean;
   joinExpiresAt: number;
@@ -110,6 +112,14 @@ function sendError(event: WebSocketEvent, message: string) {
   return sendTo(event, event.requestContext.connectionId, { type: "room-error", message });
 }
 
+async function sendTiming(event: WebSocketEvent, room: Room, connectionId?: string) {
+  const message: ServerMessage = { type: "lesson-time", roomId: room.roomId,
+    durationMinutes: room.durationMinutes ?? DEFAULT_LESSON_MINUTES, endsAt: room.endsAt ?? null, serverNow: Date.now() };
+  if (connectionId) { await sendTo(event, connectionId, message); return; }
+  await sendTo(event, room.teacherConnectionId, message);
+  if (room.studentConnectionId) await sendTo(event, room.studentConnectionId, message);
+}
+
 async function getMembership(connectionId: string) {
   const result = await documentClient.send(new GetCommand({
     TableName: tableName,
@@ -153,7 +163,7 @@ async function refreshSession(connectionId: string, membership: Membership) {
   ] }));
 }
 
-async function createRoom(event: WebSocketEvent, identity: LessonIdentity) {
+async function createRoom(event: WebSocketEvent, identity: LessonIdentity, durationMinutes = DEFAULT_LESSON_MINUTES) {
   if ("guest" in identity) {
     await sendTo(event, event.requestContext.connectionId, { type: "authentication-error", message: "Teachers must sign in with a verified email." });
     return;
@@ -168,6 +178,7 @@ async function createRoom(event: WebSocketEvent, identity: LessonIdentity) {
   const roomId = randomUUID();
   const expiry = expiresAt();
   const room: Room = {
+    durationMinutes,
     ownerUserId: identity.userId,
     ...roomKey(roomId),
     roomId,
@@ -175,7 +186,7 @@ async function createRoom(event: WebSocketEvent, identity: LessonIdentity) {
     teacherEntered: false,
     studentEntered: false,
     locked: false,
-    joinExpiresAt: Date.now() + INVITATION_LIFETIME_MS,
+    joinExpiresAt: Date.now() + durationMinutes * 60000,
     expiresAt: expiry
   };
   const membership: Membership = {
@@ -196,6 +207,7 @@ async function createRoom(event: WebSocketEvent, identity: LessonIdentity) {
     ]
   }));
   await sendTo(event, connectionId, { type: "room-created", roomId });
+  await sendTiming(event, room, connectionId);
   await sendTo(event, connectionId, { type: "room-access", roomId, locked: room.locked, joinExpiresAt: room.joinExpiresAt });
 }
 
@@ -268,6 +280,7 @@ async function joinRoom(event: WebSocketEvent, roomId: string, identity: LessonI
     return;
   }
 
+  await sendTiming(event, room, connectionId);
   await sendTo(event, connectionId, { type: "room-joined", roomId });
   const joinedRoom = await getRoom(roomId);
   if (joinedRoom?.teacherEntered) {
@@ -281,6 +294,20 @@ async function setMeetingPresence(event: WebSocketEvent, membership: Membership,
   const enteredAttribute = isTeacher ? "teacherEntered" : "studentEntered";
   const connectionId = event.requestContext.connectionId;
 
+  if (isTeacher && entering && !room.endsAt) {
+    // Only the first teacher entry starts the clock. A concurrent entry or
+    // re-entry must never reset a running deadline.
+    try {
+      const end = Date.now() + (room.durationMinutes ?? DEFAULT_LESSON_MINUTES) * 60000;
+      await documentClient.send(new UpdateCommand({ TableName: tableName, Key: roomKey(room.roomId),
+        UpdateExpression: "SET endsAt = :end, joinExpiresAt = :join",
+        ConditionExpression: "teacherConnectionId = :teacher AND expiresAt > :now AND attribute_not_exists(endsAt)",
+        ExpressionAttributeValues: { ":end": end, ":join": Math.max(room.joinExpiresAt, end),
+          ":teacher": connectionId, ":now": Math.floor(Date.now() / 1000) } }));
+    } catch (error) {
+      if (!(error instanceof Error) || error.name !== "ConditionalCheckFailedException") throw error;
+    }
+  }
   try {
     await documentClient.send(new UpdateCommand({
       TableName: tableName,
@@ -308,6 +335,9 @@ async function setMeetingPresence(event: WebSocketEvent, membership: Membership,
   // Re-read after the write: both participants may enter concurrently.
   const latestRoom = await getRoom(room.roomId);
   if (!latestRoom) return;
+  await sendTiming(event, latestRoom);
+  if (isTeacher && entering) await sendTo(event, connectionId, { type: "room-access", roomId: room.roomId,
+    locked: latestRoom.locked, joinExpiresAt: latestRoom.joinExpiresAt });
   const peerConnectionId = isTeacher ? latestRoom.studentConnectionId : latestRoom.teacherConnectionId;
   const peerEntered = isTeacher ? latestRoom.studentEntered : latestRoom.teacherEntered;
   if (!peerConnectionId || !peerEntered) return;
@@ -405,11 +435,15 @@ async function handleMessage(event: WebSocketEvent, message: ClientMessage, iden
     return;
   }
   if (message.type === "heartbeat") {
-    if (membership) await refreshSession(connectionId, membership);
+    if (membership) {
+      await refreshSession(connectionId, membership);
+      const room = await getRoom(membership.roomId);
+      if (room) await sendTiming(event, room, connectionId);
+    }
     await sendTo(event, connectionId, { type: "server-ready", protocolVersion: PROTOCOL_VERSION, authenticationRequired: true });
     return;
   }
-  if (message.type === "create-room") return createRoom(event, identity);
+  if (message.type === "create-room") return createRoom(event, identity, message.durationMinutes);
   if (message.type === "join-room") return joinRoom(event, message.roomId, identity);
   if (message.type === "authenticate") return;
   if (message.type === "leave-room") return leaveRoom(event, connectionId);
@@ -431,7 +465,7 @@ async function handleMessage(event: WebSocketEvent, message: ClientMessage, iden
     return;
   }
 
-  if (message.type === "set-room-locked" || message.type === "renew-invitation" || message.type === "end-room") {
+  if (message.type === "set-room-locked" || message.type === "renew-invitation" || message.type === "end-room" || message.type === "extend-lesson") {
     if (membership.role !== "teacher") {
       await sendError(event, "Only the room's teacher can change access or end the lesson.");
       return;
@@ -442,8 +476,30 @@ async function handleMessage(event: WebSocketEvent, message: ClientMessage, iden
       await sendTo(event, connectionId, { type: "room-closed", roomId: room.roomId, reason });
       return;
     }
+    if (message.type === "extend-lesson") {
+      if (room.endsAt === message.expectedEndsAt && room.durationMinutes <= 465) {
+        const end = Math.max(Date.now(), room.endsAt) + 15 * 60000;
+        try {
+          await documentClient.send(new UpdateCommand({ TableName: tableName, Key: roomKey(room.roomId),
+            UpdateExpression: "SET endsAt = :end, joinExpiresAt = :join, durationMinutes = :duration",
+            ConditionExpression: "teacherConnectionId = :teacher AND expiresAt > :now AND endsAt = :expected AND durationMinutes = :old",
+            ExpressionAttributeValues: { ":end": end, ":join": Math.max(room.joinExpiresAt, end), ":duration": room.durationMinutes + 15,
+              ":old": room.durationMinutes, ":expected": message.expectedEndsAt, ":teacher": connectionId, ":now": Math.floor(Date.now() / 1000) } }));
+        } catch (error) {
+          // A replay or a competing extension receives the acknowledged latest
+          // deadline instead of adding another 15 minutes.
+          if (!(error instanceof Error) || error.name !== "ConditionalCheckFailedException") throw error;
+        }
+      }
+      const updated = await getRoom(room.roomId);
+      if (updated) {
+        await sendTiming(event, updated);
+        await sendTo(event, connectionId, { type: "room-access", roomId: room.roomId, locked: updated.locked, joinExpiresAt: updated.joinExpiresAt });
+      }
+      return;
+    }
     const attribute = message.type === "set-room-locked" ? "locked" : "joinExpiresAt";
-    const value = message.type === "set-room-locked" ? message.locked : Date.now() + INVITATION_LIFETIME_MS;
+    const value = message.type === "set-room-locked" ? message.locked : Date.now() + (room.durationMinutes ?? DEFAULT_LESSON_MINUTES) * 60000;
     const result = await documentClient.send(new UpdateCommand({
       TableName: tableName, Key: roomKey(room.roomId),
       UpdateExpression: "SET #access = :value",

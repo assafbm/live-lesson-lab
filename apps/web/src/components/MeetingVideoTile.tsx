@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 
 type MeetingVideoTileProps = {
   label: string;
   accessibleLabel?: string;
+  previewRef?: RefObject<HTMLVideoElement | null>;
+  children?: ReactNode;
   stream: MediaStream | null;
   main?: boolean;
   placeholder: string;
@@ -16,6 +18,8 @@ type MeetingVideoTileProps = {
 export function MeetingVideoTile({
   label,
   accessibleLabel,
+  previewRef,
+  children,
   stream,
   main = false,
   placeholder,
@@ -63,7 +67,7 @@ export function MeetingVideoTile({
     <section ref={tileRef} className={`meeting-video-tile ${main ? "meeting-main-tile" : ""}`} aria-label={accessibleLabel ?? label}>
       {stream ? (
         <video
-          ref={videoRef}
+          ref={(element) => { videoRef.current = element; if (previewRef) previewRef.current = element; }}
           autoPlay
           playsInline
           muted
@@ -77,6 +81,7 @@ export function MeetingVideoTile({
         {detail && <small aria-label={detail} title={detail}>{detail === "Microphone muted" ? "⊘" : ""}</small>}
       </div>}
       {stream && <span className="meeting-live-dot" aria-label="Video active" />}
+      {children}
     </section>
   );
 }

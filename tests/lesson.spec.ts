@@ -350,3 +350,75 @@ test("production invitation opens for a guest while teacher setup stays behind s
     await expect(student.getByText("The lesson connection is live.", { exact: true })).toBeVisible();
   } finally { await context.close(); }
 });
+
+test("teacher extends the shared clock and overtime never disconnects the lesson", async ({ page: teacher, browser }, info) => {
+  const studentContext = await browser.newContext({ permissions: ["camera", "microphone"] });
+  const student = await studentContext.newPage();
+  // Retain sockets only in this test to simulate a server deadline without
+  // waiting an hour or changing the operating system clock.
+  for (const page of [teacher, student]) await page.addInitScript(() => {
+    const NativeSocket = window.WebSocket;
+    (window as any).__testSockets = [];
+    window.WebSocket = class extends NativeSocket {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super(url, protocols); (window as any).__testSockets.push(this);
+      }
+    };
+  });
+  try {
+    await joinPair(teacher, student, false);
+    await teacher.getByRole("button", { name: "Add 15 minutes", exact: true }).click();
+    await expect(teacher.getByLabel("Lesson time remaining")).toContainText("74:");
+    await expect(student.getByLabel("Lesson time remaining")).toContainText("74:");
+    const link = new URL(student.url());
+    const roomId = link.searchParams.get("room");
+    expect(roomId).toBeTruthy();
+    await teacher.evaluate(({ roomId }) => {
+      const socket = (window as any).__testSockets.at(-1);
+      socket.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "lesson-time", roomId,
+        durationMinutes: 75, serverNow: Date.now() + 1000, endsAt: Date.now() - 1000 }) }));
+    }, { roomId });
+    await expect(teacher.getByText("Your planned lesson time has ended", { exact: true })).toBeVisible();
+    await expect(teacher.getByText("The lesson connection is live.", { exact: true })).toBeVisible();
+    await teacher.screenshot({ path: info.outputPath("lesson-overtime-desktop.png") });
+    await teacher.setViewportSize({ width: 390, height: 844 });
+    await teacher.screenshot({ path: info.outputPath("lesson-overtime-mobile.png") });
+    expect(await teacher.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  } finally { await studentContext.close(); }
+});
+
+test("shared tab controls handle permission denial, zoom and cleanup", async ({ page: teacher, browser }) => {
+  const studentContext = await browser.newContext({ permissions: ["camera", "microphone"] });
+  const student = await studentContext.newPage();
+  try {
+    await joinPair(teacher, student, false);
+    await teacher.evaluate(() => {
+      const state = { denied: true, target: null as HTMLVideoElement | null, zoom: 100 };
+      (window as any).__tabTest = state;
+      (window as any).CaptureController = class extends EventTarget {
+        get zoomLevel() { return state.zoom; }
+        getSupportedZoomLevels() { return [50, 100, 150]; }
+        async forwardWheel(target: HTMLVideoElement | null) { if (target && state.denied) throw new DOMException("Denied", "NotAllowedError"); state.target = target; }
+        async increaseZoomLevel() { state.zoom = 150; }
+        async decreaseZoomLevel() { state.zoom = 50; }
+        async resetZoomLevel() { state.zoom = 100; }
+      };
+      const capture = navigator.mediaDevices.getDisplayMedia;
+      navigator.mediaDevices.getDisplayMedia = async (options) => {
+        const stream = await capture(options);
+        stream.getVideoTracks()[0].getSettings = () => ({ displaySurface: "browser" });
+        return stream;
+      };
+    });
+    await teacher.getByRole("button", { name: "Share screen", exact: true }).click();
+    await teacher.getByRole("button", { name: "Enable tab scrolling", exact: true }).click();
+    await expect(teacher.getByText("Tab control was denied or is unavailable. You can still use the original tab.")).toBeVisible();
+    await teacher.evaluate(() => { (window as any).__tabTest.denied = false; });
+    await teacher.getByRole("button", { name: "Enable tab scrolling", exact: true }).click();
+    expect(await teacher.evaluate(() => (window as any).__tabTest.target instanceof HTMLVideoElement)).toBe(true);
+    await teacher.getByRole("button", { name: "Zoom shared tab in", exact: true }).click();
+    await expect(teacher.getByRole("button", { name: "Reset shared tab zoom", exact: true })).toHaveText("150%");
+    await teacher.getByRole("button", { name: "Stop sharing", exact: true }).click();
+    await expect.poll(() => teacher.evaluate(() => (window as any).__tabTest.target === null)).toBe(true);
+  } finally { await studentContext.close(); }
+});
