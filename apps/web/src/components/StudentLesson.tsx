@@ -274,6 +274,7 @@ export function StudentLesson({ roomId }: StudentLessonProps) {
               )}
             </div>
             <CameraPreview
+              square
               label="Your camera"
               stream={localCamera?.stream ?? null}
               message={studentCameraId ? localCamera?.error ?? "Starting camera…" : "Your camera is off. You can still join and watch."}

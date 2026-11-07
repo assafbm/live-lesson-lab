@@ -406,6 +406,7 @@ function TeacherSetup() {
                     </select>
 
                     <CameraPreview
+                      square={role === "face"}
                       label={roleLabels[role]}
                       stream={preview?.stream ?? null}
                       message={selectedId

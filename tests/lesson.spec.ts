@@ -59,10 +59,12 @@ async function joinPair(teacher: Page, student: Page, camera = true) {
     await teacher.locator("#face-device").selectOption(device!);
     await teacher.locator("#document-device").selectOption(device!);
   }
+  await teacher.getByLabel("Your name", { exact: true }).fill("Teacher Test Name");
   await teacher.getByRole("button", { name: "Create lesson link" }).click();
   await expect(teacher.locator("#student-link")).toBeVisible();
   const link = await teacher.locator("#student-link").inputValue();
   await teacher.getByRole("button", { name: "Join lesson" }).click();
+  await expect(teacher.getByRole("region", { name: "Your camera", exact: true }).getByText("Teacher Test Name", { exact: true })).toBeVisible();
   await student.goto(link);
   if (camera) await student.getByRole("button", { name: "Enable my camera" }).click();
   await student.getByRole("button", { name: "Join lesson" }).click();
@@ -89,6 +91,9 @@ test("two-way media, one shared camera sender, transforms, microphone recovery, 
     await joinPair(teacher, student);
     await expect.poll(() => teacher.locator('section[aria-label="Student camera"] video').evaluate((video: HTMLVideoElement) => video.videoWidth)).toBeGreaterThan(0);
     await expect.poll(() => student.locator('section[aria-label="Shared content"] video').evaluate((video: HTMLVideoElement) => video.videoWidth)).toBeGreaterThan(0);
+    await expect.poll(() => teacher.locator('section[aria-label="Student camera"] video').evaluate((video: HTMLVideoElement) => video.videoWidth === video.videoHeight)).toBe(true);
+    const faceBox = await teacher.getByRole("region", { name: "Your camera", exact: true }).boundingBox();
+    expect(Math.abs(faceBox!.width - faceBox!.height)).toBeLessThan(2);
     expect(await teacher.evaluate(() => (window as any).__mediaTest.peers.at(-1).getSenders().filter((sender: RTCRtpSender) => sender.track?.kind === "video").length)).toBe(1);
     expect(await teacher.evaluate(() => (window as any).__mediaTest.streams.filter((stream: MediaStream) => stream.getVideoTracks().some((track) => track.readyState === "live")).length)).toBe(1);
 

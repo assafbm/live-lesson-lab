@@ -197,7 +197,7 @@ export function MeetingRoom({
       )}
 
       <footer className="meeting-toolbar">
-        <span className="meeting-role-caption">{role === "teacher" ? "Teacher" : "Student"}</span>
+        <span className="meeting-role-caption">{participantName}</span>
         <div className="meeting-actions">
           {(onStartScreenShare || sharingScreen) && <button className="meeting-action-button meeting-icon-button" type="button"
             aria-label={sharingScreen ? "Stop sharing" : "Share screen"} data-tooltip={sharingScreen ? "Stop sharing" : "Share screen"}

@@ -1,6 +1,7 @@
 export type VideoTransform = {
   rotation: 0 | 90 | 180 | 270;
   mirrored: boolean;
+  square?: boolean;
 };
 
 /**
@@ -61,8 +62,8 @@ export class OutgoingVideoTransform {
     const height = this.video.videoHeight;
     if (width > 0 && height > 0) {
       const quarterTurn = this.transform.rotation === 90 || this.transform.rotation === 270;
-      const outputWidth = quarterTurn ? height : width;
-      const outputHeight = quarterTurn ? width : height;
+      const outputWidth = this.transform.square ? Math.min(width, height) : quarterTurn ? height : width;
+      const outputHeight = this.transform.square ? Math.min(width, height) : quarterTurn ? width : height;
       if (this.canvas.width !== outputWidth || this.canvas.height !== outputHeight) {
         this.canvas.width = outputWidth;
         this.canvas.height = outputHeight;

@@ -194,7 +194,7 @@ export function useLessonSession(
     const current = outgoingProcessorsRef.current.get(deviceId);
     // A neutral camera goes directly to WebRTC. Canvas is only needed when
     // changing pixels; bypassing it preserves detail and reduces CPU contention.
-    if (transform.rotation === 0 && !transform.mirrored) {
+    if (transform.rotation === 0 && !transform.mirrored && !transform.square) {
       current?.processor.stop();
       outgoingProcessorsRef.current.delete(deviceId);
       setOutgoingVideoStreams((streams) => ({ ...streams, [deviceId]: new MediaStream([sourceTrack]) }));
@@ -438,7 +438,8 @@ export function useLessonSession(
           // One camera source produces one processed track. If both teacher
           // roles share the device, the role controls are linked and share it.
           const transformRole = deviceId === selections.face ? "face" : "document";
-          const transform = outgoingTransformsRef.current[transformRole];
+          // Preserve full document pixels when both roles share one sender.
+          const transform = { ...outgoingTransformsRef.current[transformRole], square: transformRole === "face" && selections.face !== selections.document };
           const outgoingTrack = getOutgoingTrack(deviceId, track, transform);
           // Shared face/document sources prioritize readable handwriting.
           outgoingTrack.contentHint = deviceId === selections.document ? "detail" : "motion";
@@ -531,7 +532,7 @@ export function useLessonSession(
           }
           const sourceTrack = stream.getVideoTracks()[0] ?? null;
           if (!sourceTrack) throw new Error("The selected camera returned no video track.");
-          nextTrack = getOutgoingTrack(requestedDeviceId, sourceTrack, outgoingTransformsRef.current.face);
+          nextTrack = getOutgoingTrack(requestedDeviceId, sourceTrack, { ...outgoingTransformsRef.current.face, square: true });
           nextTrack.contentHint = "motion";
         } catch {
           if (nextLease !== studentVideoLeaseRef.current) nextLease.lease.release();

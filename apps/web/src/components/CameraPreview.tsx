@@ -6,9 +6,10 @@ type CameraPreviewProps = {
   message: string;
   active: boolean;
   mirrored?: boolean;
+  square?: boolean;
 };
 
-export function CameraPreview({ label, stream, message, active, mirrored = false }: CameraPreviewProps) {
+export function CameraPreview({ label, stream, message, active, mirrored = false, square = false }: CameraPreviewProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
@@ -21,7 +22,7 @@ export function CameraPreview({ label, stream, message, active, mirrored = false
   }, [stream]);
 
   return (
-    <div className={`preview-frame ${active ? "preview-active" : ""}`}>
+    <div className={`preview-frame ${square ? "preview-square" : ""} ${active ? "preview-active" : ""}`}>
       <video
         ref={videoRef}
         className={mirrored ? "preview-video preview-mirrored" : "preview-video"}

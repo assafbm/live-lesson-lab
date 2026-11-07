@@ -40,7 +40,7 @@ export function MeetingVideoTile({
       const height = video.videoHeight;
       if (!width || !height) return;
       const quarterTurn = rotation === 90 || rotation === 270;
-      const scale = Math.min(tile.clientWidth / (quarterTurn ? height : width), tile.clientHeight / (quarterTurn ? width : height));
+      const scale = (main ? Math.min : Math.max)(tile.clientWidth / (quarterTurn ? height : width), tile.clientHeight / (quarterTurn ? width : height));
       setFrameSize({ width: width * scale, height: height * scale });
     };
     const observer = new ResizeObserver(fit);
@@ -49,7 +49,7 @@ export function MeetingVideoTile({
     video.addEventListener("loadedmetadata", fit);
     fit();
     return () => { observer.disconnect(); video.removeEventListener("resize", fit); video.removeEventListener("loadedmetadata", fit); };
-  }, [stream, rotation]);
+  }, [stream, rotation, main]);
 
   useEffect(() => {
     const video = videoRef.current;

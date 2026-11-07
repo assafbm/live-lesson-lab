@@ -340,3 +340,14 @@ body { background: radial-gradient(ellipse at top left, #dceaff 0, transparent 4
 .shared-tab-controls button[aria-pressed="true"] { background: #a7f3d0; color: #064e3b; }
 .shared-tab-controls button:disabled, .clock-extend:disabled { opacity: .5; cursor: default; }
 @media (max-width: 600px) { .lesson-create-row { flex-wrap: wrap; } .meeting-room-label { gap: 6px; } .lesson-clock { font-size: 11px; } .meeting-room-label .meeting-connection-status { max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .lesson-time-notice .text-button { margin: 12px 0 0; } }
+
+/* Faces use a centered square crop; shared documents retain their full frame.
+   Container units constrain two squares to the available rail height. */
+.preview-frame.preview-square { aspect-ratio: 1; }
+.preview-square .preview-video { width: 100%; height: 100%; object-fit: cover; }
+.meeting-side-rail { container-type: size; grid-template-rows: repeat(2, minmax(0, auto)); align-content: start; }
+.meeting-side-rail .meeting-video-tile { aspect-ratio: 1; width: min(100cqw, calc((100cqh - 14px) / 2)); height: auto; align-self: start; justify-self: center; }
+@media (max-width: 700px) and (min-height: 501px) {
+  .meeting-side-rail { grid-template-rows: minmax(0, 1fr); }
+  .meeting-side-rail .meeting-video-tile { width: min(calc((100cqw - 8px) / 2), 100cqh); }
+}
