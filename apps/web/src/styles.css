@@ -351,3 +351,17 @@ body { background: radial-gradient(ellipse at top left, #dceaff 0, transparent 4
   .meeting-side-rail { grid-template-rows: minmax(0, 1fr); }
   .meeting-side-rail .meeting-video-tile { width: min(calc((100cqw - 8px) / 2), 100cqh); }
 }
+
+.recording-active { color: #ffb4b4; background: #7f243d; }
+.recording-panel { position: fixed; z-index: 55; bottom: 90px; right: 18px; width: min(460px, calc(100vw - 24px)); max-height: calc(100dvh - 160px); overflow: auto; padding: 20px; background: #f5f7ff; color: #1a2a48; border: 1px solid #cad8f5; border-radius: 16px; box-shadow: 0 12px 45px #060e2c55; font-size: 14px; }
+.recording-panel header { display: flex; justify-content: space-between; align-items: center; }
+.recording-panel p { line-height: 1.6; }
+.recording-panel .text-button { margin: 10px; }
+.recording-banner { position: fixed; top: 65px; left: 24px; z-index: 35; padding: 8px 12px; background: #781e35; color: white; border-radius: 8px; font-size: 12px; max-width: calc(100vw - 48px); }
+.recording-banner button { margin-left: 12px; }
+.recording-error { position: fixed; bottom: 82px; left: 12px; z-index: 45; background: #fff1f2; color: #9f1239; padding: 8px; border-radius: 8px; }
+.recordings-library { margin-block: 24px; padding: 20px; border: 1px solid #cad8f5; background: #f5f7ff; border-radius: 16px; }
+.recordings-library p, .recordings-library li { font-size: 14px; line-height: 1.6; }
+.recordings-library li { margin-block: 12px; }
+.recordings-library button { margin: 4px; }
+@media (max-width: 400px) { .meeting-actions { gap: 5px; } .meeting-icon-button { min-width: 40px; width: 40px; } }

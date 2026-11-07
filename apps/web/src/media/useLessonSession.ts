@@ -1079,6 +1079,7 @@ export function useLessonSession(
   }, [participantName, status, roomId, send]);
 
   return {
+    getLocalAudioTracks: () => localAudioStreamRef.current?.getAudioTracks() ?? [],
     lessonTiming,
     extendLesson: () => { if (roomIdRef.current && lessonTiming?.endsAt) send({ type: "extend-lesson", roomId: roomIdRef.current, expectedEndsAt: lessonTiming.endsAt }); },
     participantName, setParticipantName, remoteParticipantName,

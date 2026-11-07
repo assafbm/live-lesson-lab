@@ -1,3 +1,4 @@
+import { RecordingsLibrary } from "./recordings/RecordingsLibrary";
 import { MicrophoneSettings } from "./components/MicrophoneSettings";
 import { useEffect, useState } from "react";
 import { CameraPreview } from "./components/CameraPreview";
@@ -248,6 +249,7 @@ function TeacherSetup() {
     return (
       <MeetingRoom
         role="teacher"
+        getLocalAudioTracks={lesson.getLocalAudioTracks}
         lessonTiming={lesson.lessonTiming}
         onExtendLesson={lesson.extendLesson}
         roomId={lesson.roomId ?? ""}
@@ -302,6 +304,7 @@ function TeacherSetup() {
           Choose a camera for each view. You can use one camera for both, or leave either view off.
         </p>
         <AccountControls />
+        <RecordingsLibrary />
         <DisplayNameInput name={lesson.participantName} onChange={lesson.setParticipantName} />
 
         <section className="lesson-controls" aria-labelledby="lesson-controls-title">

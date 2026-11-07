@@ -138,6 +138,47 @@ export class LiveLessonLabServerlessStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY
     });
 
+    // Recording objects never share the public site's bucket or CloudFront origin.
+    const recordingsBucket = new s3.Bucket(this, "PrivateLessonRecordings", {
+      bucketName: `live-lesson-lab-recordings-${this.account}-${this.region}`,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL, enforceSSL: true,
+      encryption: s3.BucketEncryption.S3_MANAGED, removalPolicy: cdk.RemovalPolicy.RETAIN,
+      lifecycleRules: [{ expiration: cdk.Duration.days(30), abortIncompleteMultipartUploadAfter: cdk.Duration.days(1) }],
+      cors: [{ allowedOrigins: [callbackOrigin], allowedMethods: [s3.HttpMethods.PUT, s3.HttpMethods.GET, s3.HttpMethods.HEAD],
+        allowedHeaders: ["*"], exposedHeaders: ["ETag"], maxAge: 300 }]
+    });
+    const recordingsHandler = new nodejs.NodejsFunction(this, "RecordingsHandler", {
+      functionName: "live-lesson-lab-recordings-api",
+      entry: path.join(__dirname, "../../../services/aws-signaling/src/recordings.ts"),
+      projectRoot: path.join(__dirname, "../../.."), depsLockFilePath: path.join(__dirname, "../../../package-lock.json"),
+      handler: "handler", runtime: lambda.Runtime.NODEJS_22_X, memorySize: 256, timeout: cdk.Duration.seconds(30),
+      environment: { ROOMS_TABLE: roomTable.tableName, LESSONS_TABLE: lessonRecords.tableName, RECORDINGS_BUCKET: recordingsBucket.bucketName,
+        AUTH_USER_POOL_ID: accounts.userPoolId, AUTH_CLIENT_ID: accountClient.userPoolClientId },
+      bundling: { minify: true, sourceMap: true, externalModules: [] }
+    });
+    recordingsHandler.addToRolePolicy(new iam.PolicyStatement({ actions: ["dynamodb:GetItem"], resources: [roomTable.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ROOM#*", "AUTH#*"] } } }));
+    recordingsHandler.addToRolePolicy(new iam.PolicyStatement({ actions: ["dynamodb:UpdateItem"], resources: [roomTable.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ROOM#*"] } } }));
+    recordingsHandler.addToRolePolicy(new iam.PolicyStatement({ actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"], resources: [lessonRecords.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["RECORDING#*", "RECORDINGS_USER#*"] } } }));
+    recordingsHandler.addToRolePolicy(new iam.PolicyStatement({ actions: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"], resources: [recordingsBucket.arnForObjects("lessons/*")] }));
+    // HeadObject returns 403 rather than 404 for an absent key without this
+    // permission; completion recovery must distinguish absence from denial.
+    recordingsHandler.addToRolePolicy(new iam.PolicyStatement({ actions: ["s3:ListBucket"], resources: [recordingsBucket.bucketArn] }));
+    // Public transport, authenticated application: every action verifies the
+    // Cognito ID token and then checks participant-specific authorization.
+    const recordingsUrl = recordingsHandler.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.NONE,
+      cors: { allowedOrigins: [callbackOrigin], allowedMethods: [lambda.HttpMethod.POST], allowedHeaders: ["authorization", "content-type"], maxAge: cdk.Duration.minutes(5) } });
+    // Restrict the public invoke permission to the HTTPS function-URL path.
+    const urlPermission = recordingsHandler.node.findChild("invoke-function-url") as lambda.CfnPermission;
+    urlPermission.addPropertyOverride("FunctionUrlAuthType", "NONE");
+    const invokePermission = recordingsHandler.node.findChild("invoke-function") as lambda.CfnPermission;
+    invokePermission.addPropertyOverride("InvokedViaFunctionUrl", true);
+    const recordingOrigin = `https://${recordingsBucket.bucketRegionalDomainName}`;
+    new cdk.CfnOutput(this, "RecordingsApiUrl", { value: recordingsUrl.url, description: "VITE_RECORDINGS_API_URL" });
+    new cdk.CfnOutput(this, "RecordingsBucketName", { value: recordingsBucket.bucketName });
+
     const distribution = new cloudfront.Distribution(this, "WebAppDistribution", {
       defaultRootObject: "index.html",
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
@@ -153,7 +194,7 @@ export class LiveLessonLabServerlessStack extends cdk.Stack {
             referrerPolicy: { referrerPolicy: cloudfront.HeadersReferrerPolicy.NO_REFERRER, override: true },
             strictTransportSecurity: { accessControlMaxAge: cdk.Duration.days(365), override: true },
             contentSecurityPolicy: {
-              contentSecurityPolicy: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self' wss://${socketApi.apiId}.execute-api.${this.region}.${this.urlSuffix} https://cognito-idp.${this.region}.${this.urlSuffix} ${authDomain}; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'`,
+              contentSecurityPolicy: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob: ${recordingOrigin}; connect-src 'self' wss://${socketApi.apiId}.execute-api.${this.region}.${this.urlSuffix} https://cognito-idp.${this.region}.${this.urlSuffix} ${authDomain} ${recordingsUrl.url} ${recordingOrigin}; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'`,
               override: true
             }
           }

@@ -1,3 +1,4 @@
+import { RecordingsLibrary } from "../recordings/RecordingsLibrary";
 import { MicrophoneSettings } from "./MicrophoneSettings";
 import { AccountControls, useAccount } from "../auth/AuthGate";
 import { DisplayNameInput } from "./DisplayNameInput";
@@ -203,6 +204,7 @@ export function StudentLesson({ roomId }: StudentLessonProps) {
     return (
       <MeetingRoom
         role="student"
+        getLocalAudioTracks={lesson.getLocalAudioTracks}
         lessonTiming={lesson.lessonTiming}
         roomId={roomId}
         connectionState={lesson.status}
@@ -253,6 +255,7 @@ export function StudentLesson({ roomId }: StudentLessonProps) {
         {account && <button className="text-button" type="button" onClick={() => {
           const target = new URL(location.href); target.searchParams.set("guest", "1"); location.assign(target.href);
         }}>Continue as guest</button>}
+        <RecordingsLibrary />
         <DisplayNameInput name={lesson.participantName} onChange={lesson.setParticipantName} />
 
         <section className="lesson-card student-lobby-card" aria-live="polite">
