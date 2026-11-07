@@ -1,6 +1,6 @@
 # Decision 0010: Guest students, names and lesson controls
 
-- Status: Implemented; deployment pending AWS CLI reauthentication.
+- Status: Deployed to the AWS pilot on 2026-11-07, application commit `5ad7c15`.
 - Protocol: 8. Release the client and signaling service together.
 
 ## Invitation access
@@ -70,7 +70,9 @@ remain in the suite. Screenshots are reviewed at desktop and phone widths.
 
 AWS adapter tests mock transport; they do not establish live transaction behavior.
 Synthetic audio tests do not resolve the reported mechanical voice quality.
-The previous identity release was uploaded to AWS, but its cache invalidation
-was interrupted by an approval-review usage limit. Current AWS CLI credentials
-expired before that invalidation could be resumed. Do not claim this new UI or
-guest flow is live until deployment and public checks complete.
+The previous identity release's cache invalidation was interrupted by an
+approval-review usage limit and then expired CLI credentials. After the owner
+renewed the session, protocol 8 and the matching web assets were deployed and
+cache invalidation completed. Public checks confirmed teacher login, guest lobby,
+invalid-link rejection and unauthenticated teacher denial. See
+[the deployment report](../deployment-2026-11-07.md) for exact verification limits.
