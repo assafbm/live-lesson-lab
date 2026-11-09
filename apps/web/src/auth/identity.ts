@@ -1,70 +1,45 @@
-import { UserManager, WebStorageStateStore, type User } from "oidc-client-ts";
+import { Amplify } from "aws-amplify";
+import { fetchAuthSession, signOut as endSession } from "aws-amplify/auth";
+import { cognitoUserPoolsTokenProvider } from "aws-amplify/auth/cognito";
+import { sessionStorage as tabStorage } from "aws-amplify/utils";
 
 const authority = import.meta.env.VITE_AUTH_AUTHORITY?.trim();
 const clientId = import.meta.env.VITE_AUTH_CLIENT_ID?.trim();
-const domain = import.meta.env.VITE_AUTH_DOMAIN?.trim();
-export const identityConfigured = Boolean(authority && clientId && domain);
-export const anonymousDevelopment = import.meta.env.DEV && !authority && !clientId && !domain;
-// Public client: no client secret. The library implements state/nonce and PKCE.
-// Session storage is tab-scoped; tokens are never put in invitation URLs.
-export const identityManager = identityConfigured ? new UserManager({
-  authority, client_id: clientId, redirect_uri: `${location.origin}/`,
-  response_type: "code", scope: "openid email", automaticSilentRenew: false,
-  loadUserInfo: false, revokeTokenTypes: ["refresh_token"],
-  userStore: new WebStorageStateStore({ store: sessionStorage }),
-  stateStore: new WebStorageStateStore({ store: sessionStorage })
-}) : null;
-
-let initialization: Promise<User | null> | undefined;
-export function initializeIdentity() {
-  // StrictMode must not redeem the same one-use authorization code twice.
-  return initialization ??= (async () => {
-    if (!identityManager) return null;
-    const query = new URLSearchParams(location.search);
-    if (query.has("state") && (query.has("code") || query.has("error"))) {
-      let user: User;
-      try { user = await identityManager.signinRedirectCallback(); }
-      catch (error) {
-        // Never preserve a failed authorization code as the next return URL.
-        history.replaceState(null, "", "/");
-        throw error;
-      }
-      const path = (user.state as { returnTo?: string } | undefined)?.returnTo ?? "/";
-      const destination = new URL(path, location.origin);
-      history.replaceState(null, "", destination.origin === location.origin ? destination.pathname + destination.search : "/");
-      return user;
-    }
-    const user = await identityManager.getUser();
-    return user && !user.expired ? user : null;
-  })();
+export const identityConfigured = Boolean(authority && clientId);
+export const anonymousDevelopment = import.meta.env.DEV && !authority && !clientId;
+export interface AccountIdentity {
+  profile: { sub: string; email?: string; name?: string; email_verified?: boolean };
+  id_token: string;
+  expired: boolean;
 }
-export function signIn() {
-  return identityManager?.signinRedirect({ state: { returnTo: location.pathname + location.search } });
+if (identityConfigured) {
+  // Use the existing pool, not a new Amplify backend. SRP and token refresh are
+  // implemented by AWS's SDK; no password or token goes into a lesson URL.
+  Amplify.configure({ Auth: { Cognito: {
+    userPoolId: new URL(authority!).pathname.slice(1), userPoolClientId: clientId!
+  } } });
+  cognitoUserPoolsTokenProvider.setKeyValueStorage(tabStorage);
 }
+export async function initializeIdentity(): Promise<AccountIdentity | null> {
+  if (!identityConfigured) return null;
+  const { tokens } = await fetchAuthSession();
+  const token = tokens?.idToken;
+  if (!token) return null;
+  return { profile: token.payload as unknown as AccountIdentity["profile"],
+    id_token: token.toString(), expired: Number(token.payload.exp) <= Date.now() / 1000 };
+}
+export async function signIn() { window.dispatchEvent(new Event("lesson-auth-open")); }
 export async function signOut() {
-  if (!identityManager || !domain || !clientId) return;
-  // Revocation is best effort: local logout must still work if the network fails.
-  try { await identityManager.revokeTokens(["refresh_token"]); } catch { /* Continue logout. */ }
-  await identityManager.removeUser();
-  const url = new URL("/logout", domain);
-  url.searchParams.set("client_id", clientId);
-  url.searchParams.set("logout_uri", `${location.origin}/`);
-  location.assign(url);
+  await endSession();
+  window.dispatchEvent(new Event("lesson-auth-changed"));
 }
-let refresh: Promise<User | null> | null = null;
 export async function getIdentityToken(allowGuest = false): Promise<string | null> {
   if (allowGuest && new URLSearchParams(location.search).get("guest") === "1") return null;
-  if (!identityManager) {
-    if (anonymousDevelopment || allowGuest) return null;
-    throw new Error("Identity configuration is required");
-  }
-  let user = await identityManager.getUser();
+  if (!identityConfigured && (anonymousDevelopment || allowGuest)) return null;
+  // fetchAuthSession renews expired tokens using the tab's refresh token. The
+  // server still independently verifies signature, issuer, client and email.
+  const user = await initializeIdentity();
   if (!user && allowGuest) return null;
-  if (user?.expired && allowGuest) return null;
-  if (user && (user.expires_in ?? 0) < 60 && user.refresh_token) {
-    refresh ??= identityManager.signinSilent().finally(() => { refresh = null; });
-    user = await refresh;
-  }
-  if (!user?.id_token || user.expired || user.profile.email_verified !== true) throw new Error("Verified sign-in required");
+  if (!user || user.expired || user.profile.email_verified !== true) throw new Error("Verified sign-in required");
   return user.id_token;
 }

@@ -36,13 +36,14 @@ export class LiveLessonLabServerlessStack extends cdk.Stack {
       standardAttributes: { email: { required: true, mutable: false } },
       accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
       featurePlan: cognito.FeaturePlan.LITE,
-      passwordPolicy: { minLength: 12, requireLowercase: true, requireUppercase: true, requireDigits: true, requireSymbols: true },
+      passwordPolicy: { minLength: 8, requireLowercase: false, requireUppercase: false, requireDigits: false, requireSymbols: false },
       deletionProtection: true,
       removalPolicy: cdk.RemovalPolicy.RETAIN
     });
     const accountClient = accounts.addClient("WebBrowser", {
       userPoolClientName: "live-lesson-lab-web",
       generateSecret: false,
+      authFlows: { userSrp: true },
       preventUserExistenceErrors: true,
       enableTokenRevocation: true,
       idTokenValidity: cdk.Duration.hours(1),

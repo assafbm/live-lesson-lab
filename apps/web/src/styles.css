@@ -365,3 +365,14 @@ body { background: radial-gradient(ellipse at top left, #dceaff 0, transparent 4
 .recordings-library li { margin-block: 12px; }
 .recordings-library button { margin: 4px; }
 @media (max-width: 400px) { .meeting-actions { gap: 5px; } .meeting-icon-button { min-width: 40px; width: 40px; } }
+
+/* The account dialog shares the lesson palette without leaving the page. */
+.auth-dialog { width: min(440px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; border: 1px solid #d5ddd9; border-radius: 24px; padding: 32px; background: #fffdf7; color: #203831; box-shadow: 0 24px 90px #162e3455; }
+.auth-dialog::backdrop { background: #142d3b99; backdrop-filter: blur(5px); }
+.auth-dialog h2 { margin: 14px 0 24px; }
+.auth-dialog fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.auth-dialog label { display: grid; gap: 8px; margin: 16px 0; font-weight: 600; }
+.auth-dialog input { width: 100%; box-sizing: border-box; padding: 12px; border: 1px solid #aabbb3; border-radius: 10px; background: white; color: #203831; font: inherit; }
+.auth-dialog .primary-button { width: 100%; }
+.auth-close { float: right; font-size: 26px; }
+.auth-links { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; margin-top: 20px; }

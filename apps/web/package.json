@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@live-lesson-lab/shared": "*",
-    "oidc-client-ts": "^3.5.0",
+    "aws-amplify": "^6.22.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
